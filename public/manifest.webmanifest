@@ -1,0 +1,17 @@
+{
+  "name": "Icon Kit — Opsette",
+  "short_name": "Icon Kit",
+  "description": "Generate favicons, app icons, and Open Graph social images right in your browser.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fafafa",
+  "theme_color": "#2f4f46",
+  "categories": ["productivity", "business", "utilities"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
