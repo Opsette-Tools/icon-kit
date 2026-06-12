@@ -8,6 +8,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
+import { ConfigProvider, App as AntApp } from "antd";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -124,8 +125,22 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      <ConfigProvider
+        theme={{
+          token: {
+            colorPrimary: "#2f4f46",
+            colorBgLayout: "#fafafa",
+            fontFamily:
+              "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+            borderRadius: 8,
+          },
+        }}
+      >
+        <AntApp>
+          {/* Required: nested routes render here. */}
+          <Outlet />
+        </AntApp>
+      </ConfigProvider>
     </QueryClientProvider>
   );
 }
