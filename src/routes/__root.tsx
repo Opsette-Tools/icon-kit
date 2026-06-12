@@ -8,6 +8,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
+import { ConfigProvider, App as AntApp } from "antd";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -77,19 +78,25 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "Icon Kit — Favicons & social images" },
+      { name: "description", content: "Generate favicons, app icons, and Open Graph social images in your browser. Part of Opsette Tools." },
+      { name: "theme-color", content: "#2f4f46" },
+      { property: "og:title", content: "Icon Kit" },
+      { property: "og:description", content: "Generate favicons and social images right in your browser." },
       { property: "og:type", content: "website" },
+      { property: "og:site_name", content: "Opsette Tools" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
     ],
     links: [
       {
         rel: "stylesheet",
         href: appCss,
+      },
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
       },
     ],
   }),
@@ -118,8 +125,22 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      <ConfigProvider
+        theme={{
+          token: {
+            colorPrimary: "#2f4f46",
+            colorBgLayout: "#fafafa",
+            fontFamily:
+              "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+            borderRadius: 8,
+          },
+        }}
+      >
+        <AntApp>
+          {/* Required: nested routes render here. */}
+          <Outlet />
+        </AntApp>
+      </ConfigProvider>
     </QueryClientProvider>
   );
 }
