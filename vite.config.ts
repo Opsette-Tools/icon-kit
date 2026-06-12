@@ -12,7 +12,7 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
-  vite: ({ command }: { command: string }) => ({
-    base: command === "build" ? "/favicon-forge/" : "/",
-  }),
+  vite: {
+    base: process.env.NODE_ENV === "production" ? "/favicon-forge/" : "/",
+  },
 });
