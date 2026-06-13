@@ -61,12 +61,35 @@ function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w:
   ctx.closePath();
 }
 
+// Render the icon at `size`, but draw on a supersampled canvas first and
+// downscale once with high-quality smoothing. Drawing tiny marks (16/32px)
+// directly produces mushy, low-contrast favicons — the classic "ink ran out"
+// look. Rendering at >=128px and downsampling keeps edges crisp.
 export async function renderIcon(size: number, opts: IconOpts): Promise<HTMLCanvasElement> {
+  if (size >= 96) return renderIconAt(size, opts);
+
+  const SUPER = Math.max(128, size * 4);
+  const big = await renderIconAt(SUPER, opts);
+
+  const out = document.createElement("canvas");
+  out.width = size;
+  out.height = size;
+  const octx = out.getContext("2d")!;
+  octx.imageSmoothingEnabled = true;
+  octx.imageSmoothingQuality = "high";
+  octx.clearRect(0, 0, size, size);
+  octx.drawImage(big, 0, 0, size, size);
+  return out;
+}
+
+async function renderIconAt(size: number, opts: IconOpts): Promise<HTMLCanvasElement> {
   await ensureInter();
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.clearRect(0, 0, size, size);
 
   const radius = (opts.radiusPct / 100) * size;
@@ -144,6 +167,58 @@ export function canvasToBlob(canvas: HTMLCanvasElement, type = "image/png"): Pro
   return new Promise((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), type),
   );
+}
+
+// ===== SVG favicon =====
+// A scalable favicon.svg is the modern best practice — browsers prefer it and
+// it stays crisp at any size. We mirror the canvas geometry (bg, radius,
+// padding) so the SVG matches the generated PNGs. Uploaded raster images are
+// embedded as a data-URI inside a scalable SVG container.
+
+const escapeXml = (s: string) =>
+  s.replace(/[<>&"']/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[c] as string),
+  );
+
+export function buildSvg(opts: IconOpts): string {
+  const S = 512;
+  const radius = (opts.radiusPct / 100) * S;
+  const mustFill = opts.bgMode === "solid" || opts.bgMode === "tile";
+  const pad = ((opts.paddingPct + (opts.extraPaddingPct ?? 0)) / 100) * S;
+  const safe = S - pad * 2;
+  const cx = S / 2;
+
+  let bg = "";
+  if (mustFill) {
+    const r = opts.bgMode === "tile" ? radius : 0;
+    bg = `<rect width="${S}" height="${S}" rx="${r}" ry="${r}" fill="${escapeXml(opts.bgColor)}"/>`;
+  }
+
+  let clip = "";
+  let clipAttr = "";
+  if (opts.bgMode === "tile") {
+    clip = `<clipPath id="tile"><rect width="${S}" height="${S}" rx="${radius}" ry="${radius}"/></clipPath>`;
+    clipAttr = ` clip-path="url(#tile)"`;
+  }
+
+  let content = "";
+  if (opts.source.type === "image") {
+    // Embed the raster centered & contained in the safe area.
+    content = `<image href="${escapeXml(opts.source.dataUrl)}" x="${pad}" y="${pad}" width="${safe}" height="${safe}" preserveAspectRatio="xMidYMid meet"/>`;
+  } else {
+    const text = opts.source.type === "initials" ? opts.source.text : opts.source.char;
+    const color = opts.source.type === "initials" ? opts.source.color : "#000000";
+    // Size text to roughly fill the safe area's height; SVG handles the scaling.
+    const fontSize = safe * 0.72;
+    const family =
+      opts.source.type === "emoji"
+        ? "'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif"
+        : "'Inter',system-ui,sans-serif";
+    const weight = opts.source.type === "initials" ? "800" : "400";
+    content = `<text x="${cx}" y="${S / 2}" font-family="${family}" font-size="${fontSize}" font-weight="${weight}" fill="${escapeXml(color)}" text-anchor="middle" dominant-baseline="central">${escapeXml(text)}</text>`;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${S} ${S}" width="${S}" height="${S}">${clip}${bg}<g${clipAttr}>${content}</g></svg>`;
 }
 
 // ===== Social image =====

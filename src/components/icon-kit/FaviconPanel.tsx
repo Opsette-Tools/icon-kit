@@ -17,6 +17,7 @@ import type { UploadProps } from "antd";
 import JSZip from "jszip";
 
 import {
+  buildSvg,
   canvasToBlob,
   renderIcon,
   type BgMode,
@@ -75,13 +76,17 @@ function buildSource(s: State): SourceSpec | null {
   return { type: "emoji", char: s.emoji || "★" };
 }
 
-function htmlSnippet() {
-  return `<link rel="icon" href="/favicon.ico" sizes="any">
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-<link rel="manifest" href="/site.webmanifest">
-<meta name="theme-color" content="#2f4f46">`;
+// Relative paths (./) so the icons resolve whether the site is served from the
+// root or a subpath (GitHub Pages project sites, etc.). Absolute "/" paths
+// silently 404 under a subpath.
+function htmlSnippet(themeColor: string) {
+  return `<link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<link rel="icon" href="./favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+<link rel="manifest" href="./site.webmanifest">
+<meta name="theme-color" content="${themeColor}">`;
 }
 
 export function FaviconPanel() {
@@ -91,6 +96,10 @@ export function FaviconPanel() {
   const previewRef = useRef<HTMLDivElement>(null);
 
   const source = useMemo(() => buildSource(state), [state]);
+
+  // Theme color follows the chosen background; transparent has no meaningful
+  // theme color so we fall back to white.
+  const themeColor = state.bgMode === "transparent" ? "#ffffff" : state.bgColor;
 
   const opts: IconOpts | null = useMemo(() => {
     if (!source) return null;
@@ -122,7 +131,7 @@ export function FaviconPanel() {
         const c = canvases[i];
         c.style.width = `${sz}px`;
         c.style.height = `${sz}px`;
-        c.style.imageRendering = sz <= 32 ? "pixelated" : "auto";
+        c.style.imageRendering = "auto";
         c.style.background =
           state.bgMode === "transparent"
             ? "repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 50% / 16px 16px"
@@ -183,6 +192,7 @@ export function FaviconPanel() {
         { size: 48, blob: blobs[48] },
       ]);
 
+      zip.file("favicon.svg", buildSvg(opts));
       zip.file("favicon.ico", ico);
       zip.file("favicon-16x16.png", blobs[16]);
       zip.file("favicon-32x32.png", blobs[32]);
@@ -191,21 +201,43 @@ export function FaviconPanel() {
       zip.file("icon-512.png", blobs[512]);
       zip.file("icon-512-maskable.png", maskableBlob);
 
+      // Relative icon paths so the manifest works under a subpath too.
       const manifest = {
         name: state.appName,
         short_name: state.appName,
         icons: [
-          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
-          { src: "/icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+          { src: "icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "icon-512.png", sizes: "512x512", type: "image/png" },
+          { src: "icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
-        theme_color: state.bgMode === "transparent" ? "#ffffff" : state.bgColor,
+        theme_color: themeColor,
         background_color: "#ffffff",
         display: "standalone",
-        start_url: "/",
+        start_url: ".",
       };
       zip.file("site.webmanifest", JSON.stringify(manifest, null, 2));
-      zip.file("README.txt", `Drop these files at your site root, then add the snippet from the Icon Kit page to your <head>.\n`);
+      zip.file(
+        "README.txt",
+        [
+          "Place these files next to your index.html (or at your site root), then",
+          "paste the <head> snippet from the Icon Kit page into your HTML.",
+          "",
+          "The links use relative paths (./) so they work whether your site is",
+          "served from the root or a subpath.",
+          "",
+          "Files:",
+          "  favicon.svg            scalable, modern browsers prefer this",
+          "  favicon.ico            16/32/48 — classic browser tabs",
+          "  favicon-16x16.png      ",
+          "  favicon-32x32.png      ",
+          "  apple-touch-icon.png   180px — iOS home screen",
+          "  icon-192.png           PWA",
+          "  icon-512.png           PWA",
+          "  icon-512-maskable.png  PWA adaptive icon (Android)",
+          "  site.webmanifest       PWA manifest",
+          "",
+        ].join("\n"),
+      );
 
       const out = await zip.generateAsync({ type: "blob" });
       downloadBlob(out, "favicons.zip");
@@ -371,14 +403,14 @@ export function FaviconPanel() {
             Download favicons.zip
           </Button>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
-            Includes .ico (16/32/48), 16/32/180/192/512 PNGs, a maskable icon, and a pre-filled site.webmanifest.
+            Includes a scalable favicon.svg, .ico (16/32/48), 16/32/180/192/512 PNGs, a maskable icon, and a pre-filled site.webmanifest.
           </Typography.Paragraph>
         </Space>
       </Card>
 
       <Card size="small" title="<head> snippet">
         <Typography.Paragraph
-          copyable={{ text: htmlSnippet() }}
+          copyable={{ text: htmlSnippet(themeColor) }}
           style={{
             background: "#0e1a17",
             color: "#d8efe7",
@@ -390,7 +422,7 @@ export function FaviconPanel() {
             margin: 0,
           }}
         >
-          {htmlSnippet()}
+          {htmlSnippet(themeColor)}
         </Typography.Paragraph>
       </Card>
     </Space>
