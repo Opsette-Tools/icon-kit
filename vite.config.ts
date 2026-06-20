@@ -24,6 +24,10 @@ export default defineConfig(({ command }) => ({
       manifest: false,
       workbox: {
         navigateFallback: "index.html",
+        // og-image.png is only fetched by social scrapers from the live server,
+        // never by the app — keep it out of the offline precache (it also
+        // exceeds the 2 MiB precache limit and would fail the build).
+        globIgnores: ["**/og-image.png"],
       },
     }),
   ],
