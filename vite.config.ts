@@ -28,6 +28,14 @@ export default defineConfig(({ command }) => ({
         // never by the app — keep it out of the offline precache (it also
         // exceeds the 2 MiB precache limit and would fail the build).
         globIgnores: ["**/og-image.png"],
+        // Kill stale-code lockout: a newly deployed service worker activates
+        // immediately (skipWaiting) and takes control of already-open pages
+        // (clientsClaim) instead of waiting for every tab to close. With
+        // registerType:"autoUpdate", a fresh deploy goes live on the next
+        // refresh — no manual "unregister + clear site data" ever again (the
+        // exact trap that stranded production on an old build).
+        skipWaiting: true,
+        clientsClaim: true,
       },
     }),
   ],
