@@ -4,6 +4,7 @@ import {
   Card,
   ColorPicker,
   Input,
+  Modal,
   Radio,
   Slider,
   Space,
@@ -12,7 +13,7 @@ import {
   Upload,
   App,
 } from "antd";
-import { DownloadOutlined, InboxOutlined } from "@ant-design/icons";
+import { DownloadOutlined, FolderOpenOutlined, InboxOutlined } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import JSZip from "jszip";
 
@@ -25,12 +26,14 @@ import {
   type SourceSpec,
 } from "../../lib/icon-kit/canvas";
 import { encodeIco } from "../../lib/icon-kit/ico";
-import { downloadBlob } from "../../lib/icon-kit/download";
+import { downloadBlob, blobToDataUrl } from "../../lib/icon-kit/download";
+import { fromSocialKitJson, type SocialAsset } from "../../lib/icon-kit/brand-kit";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
+import { ExportToBoardButton } from "./ExportToBoardButton";
 
 type SourceTab = "image" | "initials" | "emoji";
 
-interface State {
+export interface FaviconState {
   tab: SourceTab;
   imageDataUrl: string | null;
   initialsText: string;
@@ -42,8 +45,11 @@ interface State {
   radiusPct: number;
   appName: string;
 }
+// Local alias so the rest of this file reads unchanged.
+type State = FaviconState;
 
-const initial: State = {
+export const FAVICON_KEY = "iconkit.favicon.v1";
+export const faviconInitial: State = {
   tab: "initials",
   imageDataUrl: null,
   initialsText: "OP",
@@ -66,6 +72,55 @@ const EMOJI_PICKS = [
   "🌿","🌊","🌞","🌙","⭐","🍃","🍋","🍒","🍩","☕",
   "📚","📈","📝","🔒","🔑","💡","🎨","🎵","📷","🏷️",
 ];
+
+// Build the three client-facing icons Brand Board shows for a favicon set: the
+// 512 app-icon master, the 180 apple-touch icon (forced opaque so no transparent
+// checkerboard), and the 32 favicon (the literal browser-tab deliverable). We
+// deliberately DON'T ship every generated size (16/48/192/maskable/SVG would read
+// as near-identical clutter on a showcase board). Returns [] if no source yet.
+export async function buildFaviconAssets(s: State): Promise<SocialAsset[]> {
+  const source = buildSource(s);
+  if (!source) return [];
+  const opts: IconOpts = {
+    source,
+    bgMode: s.bgMode,
+    bgColor: s.bgColor,
+    paddingPct: s.paddingPct,
+    radiusPct: s.radiusPct,
+  };
+  const specs: { size: number; opaque: boolean; label: string; kind: string }[] = [
+    { size: 512, opaque: false, label: "App icon", kind: "icon" },
+    { size: 180, opaque: true, label: "Apple touch icon", kind: "icon" },
+    { size: 32, opaque: false, label: "Favicon", kind: "favicon" },
+  ];
+  const assets: SocialAsset[] = [];
+  for (const spec of specs) {
+    const canvas = await renderIcon(spec.size, { ...opts, forceOpaque: spec.opaque });
+    const blob = await canvasToBlob(canvas);
+    const image = await blobToDataUrl(blob);
+    assets.push({ image, label: spec.label, kind: spec.kind, width: spec.size, height: spec.size });
+  }
+  return assets;
+}
+
+// Has the user actually touched this tab, or is it still the stock placeholder?
+// A brand kit must never carry the default "OP" green tile into a client's board
+// just because the tab exists. Compared field-by-field against the initial state.
+export function faviconIsDirty(s: State): boolean {
+  const k: (keyof State)[] = [
+    "tab",
+    "imageDataUrl",
+    "initialsText",
+    "initialsColor",
+    "emoji",
+    "bgMode",
+    "bgColor",
+    "paddingPct",
+    "radiusPct",
+    "appName",
+  ];
+  return k.some((key) => s[key] !== faviconInitial[key]);
+}
 
 function buildSource(s: State): SourceSpec | null {
   if (s.tab === "image") {
@@ -91,9 +146,11 @@ function htmlSnippet(themeColor: string) {
 }
 
 export function FaviconPanel() {
-  const [state, dispatch] = usePersistentReducer("iconkit.favicon.v1", reducer, initial);
+  const [state, dispatch] = usePersistentReducer(FAVICON_KEY, reducer, faviconInitial);
   const { message } = App.useApp();
   const [busy, setBusy] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenText, setReopenText] = useState("");
   const previewRef = useRef<HTMLDivElement>(null);
 
   const source = useMemo(() => buildSource(state), [state]);
@@ -251,8 +308,100 @@ export function FaviconPanel() {
     }
   }
 
+  // Reopen: paste a previously exported favicon blob to restore the mark. Strict on
+  // the envelope; if the blob predates the `config` field, say so rather than
+  // silently doing nothing. (Shares the social panel's blob shape — a social-banner
+  // blob has a `config` too, but its fields don't overlap the favicon State, so the
+  // patch just no-ops on the wrong shape. The common real case is reopening a blob
+  // that came from THIS tab.)
+  function reopenFromBlob(raw: string): boolean {
+    const parsed = fromSocialKitJson(raw);
+    if (!parsed) {
+      message.error("That doesn't look like an Icon Kit export.");
+      return false;
+    }
+    const config = parsed.data.config;
+    if (!config) {
+      message.warning(
+        "This blob has the images but no saved settings (exported before reopen existed). Re-export from a current design to reopen it losslessly.",
+      );
+      return false;
+    }
+    // Only restore keys this panel actually owns — so pasting a social-banner blob
+    // by mistake can't inject unrelated fields into the favicon state. Building the
+    // patch key-by-key (rather than spreading the whole config) also keeps types
+    // honest: each assignment lines up a State key with a State value.
+    const c = config as Partial<State>;
+    const patch: Partial<State> = {};
+    if (c.tab !== undefined) patch.tab = c.tab;
+    if (c.imageDataUrl !== undefined) patch.imageDataUrl = c.imageDataUrl;
+    if (c.initialsText !== undefined) patch.initialsText = c.initialsText;
+    if (c.initialsColor !== undefined) patch.initialsColor = c.initialsColor;
+    if (c.emoji !== undefined) patch.emoji = c.emoji;
+    if (c.bgMode !== undefined) patch.bgMode = c.bgMode;
+    if (c.bgColor !== undefined) patch.bgColor = c.bgColor;
+    if (c.paddingPct !== undefined) patch.paddingPct = c.paddingPct;
+    if (c.radiusPct !== undefined) patch.radiusPct = c.radiusPct;
+    if (c.appName !== undefined) patch.appName = c.appName;
+    if (Object.keys(patch).length === 0) {
+      message.error("That export doesn't hold favicon settings — reopen it in its own tool.");
+      return false;
+    }
+    dispatch({ type: "patch", patch });
+    message.success("Icon reopened — every control is restored.");
+    return true;
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13, flex: 1, minWidth: 220 }}>
+          Build a favicon and app-icon set — download the full pack, or send the
+          key icons to Brand Board for a client's kit.
+        </Typography.Paragraph>
+        <Button icon={<FolderOpenOutlined />} onClick={() => setReopenOpen(true)}>
+          Reopen a saved icon
+        </Button>
+      </div>
+
+      <Modal
+        title="Reopen a saved icon"
+        open={reopenOpen}
+        onCancel={() => {
+          setReopenOpen(false);
+          setReopenText("");
+        }}
+        okText="Reopen"
+        onOk={() => {
+          if (reopenFromBlob(reopenText)) {
+            setReopenOpen(false);
+            setReopenText("");
+          }
+        }}
+        okButtonProps={{ disabled: !reopenText.trim() }}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+          Paste an <b>Export to Brand Board</b> blob (from this Favicon tab) to
+          rebuild the mark — source, background, shape, padding and app name. It's
+          the same blob you'd paste into Brand Board.
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={6}
+          value={reopenText}
+          onChange={(e) => setReopenText(e.target.value)}
+          placeholder='{"type":"social","v":1,"source":"opsette","data":{...}}'
+          style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}
+        />
+      </Modal>
+
       <Card size="small" title="1. Pick your mark">
         <Tabs
           activeKey={state.tab}
@@ -405,6 +554,12 @@ export function FaviconPanel() {
           </Button>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
             Includes a scalable favicon.svg, .ico (16/32/48), 16/32/180/192/512 PNGs, a maskable icon, and a pre-filled site.webmanifest.
+          </Typography.Paragraph>
+          <ExportToBoardButton scope="favicon" liveState={state} disabled={!opts} block />
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
+            Sends the app-icon (512), Apple touch icon (180) and favicon (32) as a
+            brand-asset set — paste into Brand Board, or back into “Reopen” to revise.
+            If you've also designed a social banner, you'll be offered to export both.
           </Typography.Paragraph>
         </Space>
       </Card>

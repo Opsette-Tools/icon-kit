@@ -15,7 +15,7 @@ import {
   Upload,
 } from "antd";
 import type { UploadProps } from "antd";
-import { DownloadOutlined, InboxOutlined, ExportOutlined, FolderOpenOutlined } from "@ant-design/icons";
+import { DownloadOutlined, InboxOutlined, FolderOpenOutlined } from "@ant-design/icons";
 
 import {
   BANNER_SIZES,
@@ -37,8 +37,9 @@ import {
   type TextureKind,
   type WatermarkEdge,
 } from "../../lib/icon-kit/social-design";
-import { toSocialKitJson, fromSocialKitJson, type SocialConfig } from "../../lib/icon-kit/brand-kit";
-import { downloadBlob } from "../../lib/icon-kit/download";
+import { fromSocialKitJson, type SocialAsset } from "../../lib/icon-kit/brand-kit";
+import { ExportToBoardButton } from "./ExportToBoardButton";
+import { downloadBlob, blobToDataUrl } from "../../lib/icon-kit/download";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 import {
   ContactBarControls,
@@ -99,7 +100,7 @@ const OUTPUTS: OutputDef[] = [
 // choice per output id so tuning the wide LinkedIn strip doesn't disturb the card.
 type AnyLayout = SocialLayout | BannerLayout;
 
-interface State {
+export interface SocialState {
   // Shared content — entered once, drives every preview.
   headline: string;
   eyebrow: string;
@@ -147,8 +148,11 @@ interface State {
   // Preview-only guide.
   showSafeZone: boolean;
 }
+// Local alias so the rest of this file reads unchanged.
+type State = SocialState;
 
-const initial: State = {
+export const SOCIAL_KEY = "iconkit.social.v2";
+export const socialInitial: State = {
   headline: "Acme Studio",
   eyebrow: "Brand & Web Design",
   subhead: "Design that ships.",
@@ -317,6 +321,33 @@ async function renderOutput(out: OutputDef, s: State): Promise<HTMLCanvasElement
   });
 }
 
+// Build the export assets from the SELECTED outputs — each a rendered PNG data
+// URL with a board label, kind hint and natural dimensions. Shared by the panel's
+// own export button and the App-level combined export. Returns [] if nothing's
+// selected.
+export async function buildSocialAssets(s: State): Promise<SocialAsset[]> {
+  const selected = OUTPUTS.filter((o) => s.selected[o.id]);
+  const assets: SocialAsset[] = [];
+  for (const out of selected) {
+    const canvas = await renderOutput(out, s);
+    const blob = await canvasToBlob(canvas);
+    const image = await blobToDataUrl(blob);
+    assets.push({ image, label: out.boardLabel, kind: out.boardKind, width: out.w, height: out.h });
+  }
+  return assets;
+}
+
+// Has the user meaningfully touched the banner builder? We ignore the transient
+// view-only fields (selection checkboxes, safe-zone toggle) — only real design
+// content counts, so an untouched-but-glanced-at tab isn't treated as "made."
+export function socialIsDirty(s: State): boolean {
+  const skip = new Set<keyof State>(["selected", "showSafeZone"]);
+  return (Object.keys(socialInitial) as (keyof State)[]).some((key) => {
+    if (skip.has(key)) return false;
+    return JSON.stringify(s[key]) !== JSON.stringify(socialInitial[key]);
+  });
+}
+
 // A single preview tile: live canvas + select checkbox + per-tile layout + download.
 function PreviewTile({
   out,
@@ -454,7 +485,7 @@ function PreviewTile({
 }
 
 export function SocialPanel() {
-  const [state, dispatch] = usePersistentReducer("iconkit.social.v2", reducer, initial);
+  const [state, dispatch] = usePersistentReducer(SOCIAL_KEY, reducer, socialInitial);
   const [busy, setBusy] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenText, setReopenText] = useState("");
@@ -531,48 +562,6 @@ export function SocialPanel() {
     } catch (e) {
       console.error(e);
       message.error("Could not generate the images");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Export to Brand Board: emit the `type:"social"` payload the board consumes —
-  // a generic list of labeled image assets, one per SELECTED output. Each carries
-  // its rendered PNG (as a data URL), a board label, a kind hint, and dimensions
-  // so the board sizes wide banners full-width and the card compact.
-  //
-  // The blob does DOUBLE duty (BRAND-KIT-INTEROP-CONTRACT §5 "triple duty"):
-  // alongside `assets[]` we tuck the full design `config` (the whole builder
-  // state) so the SAME blob pasted back into "Reopen" rebuilds the session
-  // exactly. The board ignores `config`; Reopen ignores nothing.
-  async function exportToBrandBoard() {
-    if (selectedOutputs.length === 0) {
-      message.info("Select at least one size to export");
-      return;
-    }
-    setBusy(true);
-    try {
-      const assets = [];
-      for (const out of selectedOutputs) {
-        const c = await renderOutput(out, state);
-        const blob = await canvasToBlob(c);
-        const image = await blobToDataUrl(blob);
-        assets.push({
-          image,
-          label: out.boardLabel,
-          kind: out.boardKind,
-          width: out.w,
-          height: out.h,
-        });
-      }
-      const payload = toSocialKitJson(assets, state as unknown as SocialConfig);
-      await navigator.clipboard.writeText(JSON.stringify(payload));
-      message.success(
-        `Copied ${assets.length} asset(s) — paste into Brand Board, or back into "Reopen" to revise later`,
-      );
-    } catch (e) {
-      console.error(e);
-      message.error("Could not export to Brand Board");
     } finally {
       setBusy(false);
     }
@@ -965,17 +954,7 @@ export function SocialPanel() {
       </Card>
 
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
-        <Button
-          type="primary"
-          size="large"
-          icon={<ExportOutlined />}
-          loading={busy}
-          onClick={exportToBrandBoard}
-          disabled={!someSelected}
-          block
-        >
-          Export selected to Brand Board
-        </Button>
+        <ExportToBoardButton scope="social" liveState={state} disabled={!someSelected} block />
         <Button
           size="large"
           icon={<DownloadOutlined />}
@@ -1012,13 +991,4 @@ export function SocialPanel() {
       </div>
     </div>
   );
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 }
