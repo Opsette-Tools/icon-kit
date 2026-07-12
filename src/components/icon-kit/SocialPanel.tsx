@@ -6,6 +6,7 @@ import {
   Checkbox,
   ColorPicker,
   Input,
+  Modal,
   Radio,
   Slider,
   Space,
@@ -14,7 +15,7 @@ import {
   Upload,
 } from "antd";
 import type { UploadProps } from "antd";
-import { DownloadOutlined, InboxOutlined, ExportOutlined } from "@ant-design/icons";
+import { DownloadOutlined, InboxOutlined, ExportOutlined, FolderOpenOutlined } from "@ant-design/icons";
 
 import {
   BANNER_SIZES,
@@ -36,6 +37,7 @@ import {
   type TextureKind,
   type WatermarkEdge,
 } from "../../lib/icon-kit/social-design";
+import { toSocialKitJson, fromSocialKitJson, type SocialConfig } from "../../lib/icon-kit/brand-kit";
 import { downloadBlob } from "../../lib/icon-kit/download";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 import {
@@ -454,6 +456,8 @@ function PreviewTile({
 export function SocialPanel() {
   const [state, dispatch] = usePersistentReducer("iconkit.social.v2", reducer, initial);
   const [busy, setBusy] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenText, setReopenText] = useState("");
   const { message } = App.useApp();
 
   // Load the chosen font pairing so previews draw with it (idempotent).
@@ -535,8 +539,12 @@ export function SocialPanel() {
   // Export to Brand Board: emit the `type:"social"` payload the board consumes —
   // a generic list of labeled image assets, one per SELECTED output. Each carries
   // its rendered PNG (as a data URL), a board label, a kind hint, and dimensions
-  // so the board sizes wide banners full-width and the card compact. One paste
-  // brings the whole selection over. Matches BRAND-KIT-INTEROP-CONTRACT §5.
+  // so the board sizes wide banners full-width and the card compact.
+  //
+  // The blob does DOUBLE duty (BRAND-KIT-INTEROP-CONTRACT §5 "triple duty"):
+  // alongside `assets[]` we tuck the full design `config` (the whole builder
+  // state) so the SAME blob pasted back into "Reopen" rebuilds the session
+  // exactly. The board ignores `config`; Reopen ignores nothing.
   async function exportToBrandBoard() {
     if (selectedOutputs.length === 0) {
       message.info("Select at least one size to export");
@@ -557,10 +565,10 @@ export function SocialPanel() {
           height: out.h,
         });
       }
-      const payload = { type: "social", v: 1, source: "opsette", data: { assets } };
+      const payload = toSocialKitJson(assets, state as unknown as SocialConfig);
       await navigator.clipboard.writeText(JSON.stringify(payload));
       message.success(
-        `Copied ${assets.length} asset(s) — paste into Brand Board's Social field`,
+        `Copied ${assets.length} asset(s) — paste into Brand Board, or back into "Reopen" to revise later`,
       );
     } catch (e) {
       console.error(e);
@@ -570,16 +578,85 @@ export function SocialPanel() {
     }
   }
 
+  // Reopen: paste a previously exported `social` blob to restore the full design.
+  // Strict on the envelope; if the blob predates the `config` field (older
+  // exports carried only images), we say so rather than silently doing nothing.
+  function reopenFromBlob(raw: string): boolean {
+    const parsed = fromSocialKitJson(raw);
+    if (!parsed) {
+      message.error("That doesn't look like an Icon Kit social export.");
+      return false;
+    }
+    const config = parsed.data.config;
+    if (!config) {
+      message.warning(
+        "This blob has the images but no saved design settings (exported before reopen existed). Re-export from a current design to reopen it losslessly.",
+      );
+      return false;
+    }
+    // Merge onto current state — patch reducer spreads it, so any fields the blob
+    // is missing keep their current value. Restores name/font/watermark/texture/
+    // photo/highlight/layouts/contact bar — everything.
+    dispatch({ type: "patch", patch: config as Partial<typeof state> });
+    message.success("Design reopened — every control is restored.");
+    return true;
+  }
+
   const allSelected = OUTPUTS.every((o) => state.selected[o.id]);
   const someSelected = OUTPUTS.some((o) => state.selected[o.id]);
   const ogSelected = state.selected.og;
 
   return (
     <div className="social-layout">
-      <Typography.Paragraph type="secondary" style={{ margin: "0 0 16px", fontSize: 13 }}>
-        Design once — every size renders on the right. Check the ones you want,
-        then download them or export the set to Brand Board.
-      </Typography.Paragraph>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13, flex: 1, minWidth: 220 }}>
+          Design once — every size renders on the right. Check the ones you want,
+          then download them or export the set to Brand Board.
+        </Typography.Paragraph>
+        <Button icon={<FolderOpenOutlined />} onClick={() => setReopenOpen(true)}>
+          Reopen a saved design
+        </Button>
+      </div>
+
+      <Modal
+        title="Reopen a saved design"
+        open={reopenOpen}
+        onCancel={() => {
+          setReopenOpen(false);
+          setReopenText("");
+        }}
+        okText="Reopen"
+        onOk={() => {
+          if (reopenFromBlob(reopenText)) {
+            setReopenOpen(false);
+            setReopenText("");
+          }
+        }}
+        okButtonProps={{ disabled: !reopenText.trim() }}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+          Paste an <b>Export to Brand Board</b> blob (from this tool) to rebuild
+          the whole design — name, fonts, background, watermark, texture, photo,
+          highlight, layouts and contact bar. It's the same blob you'd paste into
+          Brand Board.
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={6}
+          value={reopenText}
+          onChange={(e) => setReopenText(e.target.value)}
+          placeholder='{"type":"social","v":1,"source":"opsette","data":{...}}'
+          style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}
+        />
+      </Modal>
 
       {/* Two-column: controls left, sticky previews + actions right. Collapses to
           a single stacked column on mobile via .social-split (see styles.css). */}
