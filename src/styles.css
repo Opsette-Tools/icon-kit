@@ -142,3 +142,37 @@
     color: var(--color-foreground);
   }
 }
+
+/* ── Social builder: wide two-column layout ──────────────────────────────────
+   Controls on the left, previews pinned on the right so the design stays in
+   view while building. Mirrors Palette Studio's editor + sticky-preview split.
+   Single stacked column on mobile — previews un-pin and drop below controls. */
+.social-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.social-preview-col {
+  position: sticky;
+  top: 16px;
+  /* Keep the pinned previews within the viewport; scroll internally if the
+     four tiles are taller than the screen. */
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  /* room so the scrollbar doesn't crowd the tiles */
+  padding-right: 4px;
+}
+
+@media (max-width: 900px) {
+  .social-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .social-preview-col {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
+  }
+}

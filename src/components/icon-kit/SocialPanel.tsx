@@ -9,6 +9,7 @@ import {
   Radio,
   Slider,
   Space,
+  Switch,
   Typography,
   Upload,
 } from "antd";
@@ -22,11 +23,32 @@ import {
   renderSocial,
   type BannerLayout,
   type BannerPlatform,
+  type DesignLayers,
   type SocialBg,
   type SocialLayout,
 } from "../../lib/icon-kit/canvas";
+import {
+  DEFAULT_FONT_ID,
+  getFontPair,
+  loadFontPair,
+  mixHex,
+  type HighlightStyle,
+  type TextureKind,
+  type WatermarkEdge,
+} from "../../lib/icon-kit/social-design";
 import { downloadBlob } from "../../lib/icon-kit/download";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
+import {
+  ContactBarControls,
+  ContrastShield,
+  DuotoneControls,
+  FontPicker,
+  PhotoPanelControls,
+  TexturePicker,
+  WatermarkControls,
+  WordHighlightPicker,
+} from "./social-controls";
+import { SafeZoneOverlay } from "./SafeZoneOverlay";
 
 type BgKind = "solid" | "gradient" | "image";
 
@@ -78,7 +100,9 @@ type AnyLayout = SocialLayout | BannerLayout;
 interface State {
   // Shared content — entered once, drives every preview.
   headline: string;
+  eyebrow: string;
   subhead: string;
+  fontId: string;
   logoDataUrl: string | null;
   bgKind: BgKind;
   solidColor: string;
@@ -87,16 +111,46 @@ interface State {
   gradAngle: number;
   bgImage: string | null;
   overlay: number;
+  duotone: boolean;
+  duoShadow: string;
+  duoHighlight: string;
   textColor: string;
+  // Design layers.
+  accentColor: string;
+  texture: TextureKind;
+  watermark: boolean;
+  watermarkEdge: WatermarkEdge;
+  watermarkOpacity: number;
+  watermarkScale: number;
+  // Photo panel (banner photo-panel layout) — a person/product photo carved
+  // into one side. Separate from the OG-card background photo above.
+  panelPhoto: string | null;
+  photoSide: "left" | "right";
+  photoDivider: "straight" | "diagonal" | "curve";
+  photoZoom: number; // 1..2.5
+  photoFocusX: number; // 0..1
+  photoFocusY: number; // 0..1
+  // Highlight phrase — words in the name/tagline spotlighted, + how.
+  highlightPhrase: string;
+  highlightStyle: HighlightStyle;
+  // Contact bar (bottom business strip) — any layout.
+  contactBar: boolean;
+  contactWebsite: string;
+  contactPhone: string;
+  contactCta: string;
   // Per-output layout choices.
   layouts: Record<OutputId, AnyLayout>;
   // Which outputs are selected for export / download-all.
   selected: Record<OutputId, boolean>;
+  // Preview-only guide.
+  showSafeZone: boolean;
 }
 
 const initial: State = {
   headline: "Acme Studio",
+  eyebrow: "Brand & Web Design",
   subhead: "Design that ships.",
+  fontId: DEFAULT_FONT_ID,
   logoDataUrl: null,
   bgKind: "gradient",
   solidColor: "#2f4f46",
@@ -105,9 +159,31 @@ const initial: State = {
   gradAngle: 135,
   bgImage: null,
   overlay: 0.35,
+  duotone: false,
+  duoShadow: "#1c332c",
+  duoHighlight: "#e8f2ec",
   textColor: "#ffffff",
+  accentColor: "#a7d7c2",
+  texture: "corner-blob",
+  watermark: false,
+  watermarkEdge: "right",
+  watermarkOpacity: 0.1,
+  watermarkScale: 1.4,
+  panelPhoto: null,
+  photoSide: "left",
+  photoDivider: "diagonal",
+  photoZoom: 1,
+  photoFocusX: 0.5,
+  photoFocusY: 0.35,
+  highlightPhrase: "",
+  highlightStyle: "bold",
+  contactBar: false,
+  contactWebsite: "www.yourbrand.com",
+  contactPhone: "+1 555 123 4567",
+  contactCta: "Get Started",
   layouts: { og: "centered", linkedin: "left", facebook: "centered", twitter: "left" },
   selected: { og: true, linkedin: true, facebook: true, twitter: true },
+  showSafeZone: true,
 };
 
 type Action =
@@ -130,7 +206,42 @@ function buildBg(s: State): SocialBg {
   if (s.bgKind === "solid") return { type: "solid", color: s.solidColor };
   if (s.bgKind === "gradient")
     return { type: "gradient", from: s.gradFrom, to: s.gradTo, angle: s.gradAngle };
-  return { type: "image", dataUrl: s.bgImage || "", overlay: s.overlay };
+  return {
+    type: "image",
+    dataUrl: s.bgImage || "",
+    overlay: s.overlay,
+    duotone: s.duotone ? { shadow: s.duoShadow, highlight: s.duoHighlight } : undefined,
+  };
+}
+
+// The design-layers bundle both renderers read. Assembled once from state so the
+// panel never hand-passes the same fields in two places.
+function buildDesign(s: State): DesignLayers {
+  return {
+    fontId: s.fontId,
+    eyebrow: s.eyebrow,
+    accentColor: s.accentColor,
+    texture: s.texture,
+    watermark:
+      s.watermark && s.logoDataUrl
+        ? {
+            dataUrl: s.logoDataUrl,
+            edge: s.watermarkEdge,
+            opacity: s.watermarkOpacity,
+            scale: s.watermarkScale,
+          }
+        : undefined,
+  };
+}
+
+// The dominant background color, used by the contrast guardrail. For a gradient
+// we approximate with the mid-mix of the two stops; for a photo the overlay
+// darkens it, so we bias toward black.
+function dominantBg(s: State): string {
+  if (s.bgKind === "solid") return s.solidColor;
+  if (s.bgKind === "gradient") return mixHex(s.gradFrom, s.gradTo);
+  // photo: overlay darkens; approximate with a dark tone scaled by overlay.
+  return s.overlay >= 0.4 ? "#1a1a1a" : mixHex(s.duoShadow, s.duoHighlight);
 }
 
 function metaSnippet(headline: string, subhead: string) {
@@ -156,6 +267,7 @@ function escapeAttr(s: string) {
 // renderer), so a photo background only affects the OG card.
 async function renderOutput(out: OutputDef, s: State): Promise<HTMLCanvasElement> {
   const background = buildBg(s);
+  const design = buildDesign(s);
   if (out.id === "og") {
     return renderSocial({
       headline: s.headline,
@@ -164,17 +276,42 @@ async function renderOutput(out: OutputDef, s: State): Promise<HTMLCanvasElement
       background,
       layout: s.layouts.og as SocialLayout,
       textColor: s.textColor,
+      design,
     });
   }
   const size = BANNER_SIZES.find((b) => b.id === out.id)!;
+  const layout = s.layouts[out.id] as BannerLayout;
+  const contactBar =
+    s.contactBar && (s.contactWebsite.trim() || s.contactPhone.trim() || s.contactCta.trim())
+      ? {
+          website: s.contactWebsite.trim() || undefined,
+          phone: s.contactPhone.trim() || undefined,
+          cta: s.contactCta.trim() || undefined,
+        }
+      : undefined;
   return renderBanner({
     size,
     name: s.headline,
     tagline: s.subhead,
     logoDataUrl: s.logoDataUrl ?? undefined,
     background,
-    layout: s.layouts[out.id] as BannerLayout,
+    layout,
     textColor: s.textColor,
+    design,
+    photo:
+      layout === "photo-panel" && s.panelPhoto
+        ? {
+            dataUrl: s.panelPhoto,
+            side: s.photoSide,
+            divider: s.photoDivider,
+            zoom: s.photoZoom,
+            focusX: s.photoFocusX,
+            focusY: s.photoFocusY,
+          }
+        : undefined,
+    highlightPhrase: s.highlightPhrase.trim() || undefined,
+    highlightStyle: s.highlightStyle,
+    contactBar,
   });
 }
 
@@ -196,11 +333,26 @@ function PreviewTile({
     () =>
       JSON.stringify({
         h: state.headline,
+        e: state.eyebrow,
         s: state.subhead,
+        f: state.fontId,
         logo: state.logoDataUrl,
         bg: buildBg(state),
         tc: state.textColor,
+        design: buildDesign(state),
         layout: state.layouts[out.id],
+        photo: state.panelPhoto,
+        pside: state.photoSide,
+        pdiv: state.photoDivider,
+        pzoom: state.photoZoom,
+        pfx: state.photoFocusX,
+        pfy: state.photoFocusY,
+        hl: state.highlightPhrase,
+        hls: state.highlightStyle,
+        cb: state.contactBar,
+        cw: state.contactWebsite,
+        cp: state.contactPhone,
+        cc: state.contactCta,
       }),
     [state, out.id],
   );
@@ -228,6 +380,7 @@ function PreviewTile({
   }, [key]);
 
   const isOg = out.id === "og";
+  const showGuide = !isOg && state.showSafeZone;
 
   return (
     <Card
@@ -251,19 +404,22 @@ function PreviewTile({
           </Button>
         </div>
 
-        <div
-          ref={wrap}
-          style={{
-            width: "100%",
-            // Reserve height by ratio only until the canvas paints, then the
-            // canvas (width:100%, height:auto) governs. No bg fill so nothing
-            // shows through beside the image.
-            minHeight: 1,
-            borderRadius: 6,
-            overflow: "hidden",
-            border: "1px solid #f0f0f0",
-          }}
-        />
+        <div style={{ position: "relative", width: "100%" }}>
+          <div
+            ref={wrap}
+            style={{
+              width: "100%",
+              // Reserve height by ratio only until the canvas paints, then the
+              // canvas (width:100%, height:auto) governs. No bg fill so nothing
+              // shows through beside the image.
+              minHeight: 1,
+              borderRadius: 6,
+              overflow: "hidden",
+              border: "1px solid #f0f0f0",
+            }}
+          />
+          {showGuide && <SafeZoneOverlay platform={out.id as BannerPlatform} />}
+        </div>
 
         <Radio.Group
           size="small"
@@ -280,18 +436,30 @@ function PreviewTile({
             <>
               <Radio.Button value="left">Left</Radio.Button>
               <Radio.Button value="centered">Centered</Radio.Button>
+              <Radio.Button value="photo-panel">Photo</Radio.Button>
+              <Radio.Button value="highlight">Highlight</Radio.Button>
             </>
           )}
         </Radio.Group>
+        {!isOg && state.layouts[out.id] === "photo-panel" && !state.panelPhoto && (
+          <Typography.Text type="warning" style={{ fontSize: 12 }}>
+            Upload a panel photo below (card 5) to fill the photo side.
+          </Typography.Text>
+        )}
       </Space>
     </Card>
   );
 }
 
 export function SocialPanel() {
-  const [state, dispatch] = usePersistentReducer("iconkit.social.v1", reducer, initial);
+  const [state, dispatch] = usePersistentReducer("iconkit.social.v2", reducer, initial);
   const [busy, setBusy] = useState(false);
   const { message } = App.useApp();
+
+  // Load the chosen font pairing so previews draw with it (idempotent).
+  useEffect(() => {
+    loadFontPair(getFontPair(state.fontId));
+  }, [state.fontId]);
 
   const selectedOutputs = OUTPUTS.filter((o) => state.selected[o.id]);
 
@@ -314,6 +482,18 @@ export function SocialPanel() {
       const reader = new FileReader();
       reader.onload = (e) =>
         dispatch({ type: "patch", patch: { bgImage: String(e.target?.result || "") } });
+      reader.readAsDataURL(file);
+      return false;
+    },
+  };
+
+  const panelPhotoUpload: UploadProps = {
+    accept: "image/png,image/jpeg",
+    showUploadList: false,
+    beforeUpload: (file) => {
+      const reader = new FileReader();
+      reader.onload = (e) =>
+        dispatch({ type: "patch", patch: { panelPhoto: String(e.target?.result || "") } });
       reader.readAsDataURL(file);
       return false;
     },
@@ -395,14 +575,24 @@ export function SocialPanel() {
   const ogSelected = state.selected.og;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
-        Design once — every size renders below. Check the ones you want, then
-        download them or export the set to Brand Board.
+    <div className="social-layout">
+      <Typography.Paragraph type="secondary" style={{ margin: "0 0 16px", fontSize: 13 }}>
+        Design once — every size renders on the right. Check the ones you want,
+        then download them or export the set to Brand Board.
       </Typography.Paragraph>
 
-      <Card size="small" title="1. Brand name & tagline">
-        <Space direction="vertical" style={{ width: "100%" }}>
+      {/* Two-column: controls left, sticky previews + actions right. Collapses to
+          a single stacked column on mobile via .social-split (see styles.css). */}
+      <div className="social-split">
+        <Space direction="vertical" size={16} style={{ width: "100%" }} className="social-controls-col">
+          <Card size="small" title="1. Brand name & type">
+        <Space direction="vertical" style={{ width: "100%" }} size={10}>
+          <Input
+            placeholder="Eyebrow — role or location (optional)"
+            value={state.eyebrow}
+            onChange={(e) => dispatch({ type: "patch", patch: { eyebrow: e.target.value } })}
+            maxLength={40}
+          />
           <Input
             placeholder="Brand name / headline"
             value={state.headline}
@@ -413,6 +603,34 @@ export function SocialPanel() {
             value={state.subhead}
             onChange={(e) => dispatch({ type: "patch", patch: { subhead: e.target.value } })}
           />
+          <div
+            style={{
+              border: "1px dashed #e0e0e0",
+              borderRadius: 8,
+              padding: "10px 12px",
+              background: "#fafafa",
+            }}
+          >
+            <WordHighlightPicker
+              value={state.highlightPhrase}
+              name={state.headline}
+              tagline={state.subhead}
+              style={state.highlightStyle}
+              onChange={(v) => dispatch({ type: "patch", patch: { highlightPhrase: v } })}
+              onStyle={(s) => dispatch({ type: "patch", patch: { highlightStyle: s } })}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Font pairing — eyebrow → name → tagline
+            </Typography.Text>
+            <div style={{ marginTop: 4 }}>
+              <FontPicker
+                value={state.fontId}
+                onChange={(id) => dispatch({ type: "patch", patch: { fontId: id } })}
+              />
+            </div>
+          </div>
           <Space>
             <span>Text color</span>
             <ColorPicker
@@ -420,22 +638,42 @@ export function SocialPanel() {
               onChange={(c) => dispatch({ type: "patch", patch: { textColor: c.toHexString() } })}
             />
           </Space>
+          <ContrastShield
+            textColor={state.textColor}
+            bgColor={dominantBg(state)}
+            onFix={(color) => dispatch({ type: "patch", patch: { textColor: color } })}
+          />
         </Space>
       </Card>
 
       <Card size="small" title="2. Logo (optional)">
-        <Space>
-          <Upload {...logoUpload}>
-            <Button icon={<InboxOutlined />}>Upload logo</Button>
-          </Upload>
-          {state.logoDataUrl && (
-            <Button
-              type="link"
-              onClick={() => dispatch({ type: "patch", patch: { logoDataUrl: null } })}
-            >
-              Remove
-            </Button>
-          )}
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          <Space>
+            <Upload {...logoUpload}>
+              <Button icon={<InboxOutlined />}>Upload logo</Button>
+            </Upload>
+            {state.logoDataUrl && (
+              <Button
+                type="link"
+                onClick={() =>
+                  dispatch({ type: "patch", patch: { logoDataUrl: null, watermark: false } })
+                }
+              >
+                Remove
+              </Button>
+            )}
+          </Space>
+          <WatermarkControls
+            enabled={state.watermark}
+            edge={state.watermarkEdge}
+            opacity={state.watermarkOpacity}
+            scale={state.watermarkScale}
+            hasLogo={Boolean(state.logoDataUrl)}
+            onToggle={(on) => dispatch({ type: "patch", patch: { watermark: on } })}
+            onEdge={(e) => dispatch({ type: "patch", patch: { watermarkEdge: e } })}
+            onOpacity={(v) => dispatch({ type: "patch", patch: { watermarkOpacity: v } })}
+            onScale={(v) => dispatch({ type: "patch", patch: { watermarkScale: v } })}
+          />
         </Space>
       </Card>
 
@@ -487,7 +725,7 @@ export function SocialPanel() {
             </Space>
           )}
           {state.bgKind === "image" && (
-            <Space direction="vertical" style={{ width: "100%" }}>
+            <Space direction="vertical" style={{ width: "100%" }} size={12}>
               <Upload {...bgUpload}>
                 <Button icon={<InboxOutlined />}>
                   {state.bgImage ? "Replace image" : "Upload background"}
@@ -510,37 +748,133 @@ export function SocialPanel() {
                   }
                 />
               </div>
+              <DuotoneControls
+                enabled={state.duotone}
+                shadow={state.duoShadow}
+                highlight={state.duoHighlight}
+                onToggle={(on) => dispatch({ type: "patch", patch: { duotone: on } })}
+                onShadow={(c) => dispatch({ type: "patch", patch: { duoShadow: c } })}
+                onHighlight={(c) => dispatch({ type: "patch", patch: { duoHighlight: c } })}
+              />
             </Space>
           )}
         </Space>
       </Card>
 
+      <Card size="small" title="4. Texture & accent">
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              One subtle shape layer
+            </Typography.Text>
+            <div style={{ marginTop: 4 }}>
+              <TexturePicker
+                value={state.texture}
+                onChange={(t) => dispatch({ type: "patch", patch: { texture: t } })}
+              />
+            </div>
+          </div>
+          <Space>
+            <span>Accent color</span>
+            <ColorPicker
+              value={state.accentColor}
+              onChange={(c) => dispatch({ type: "patch", patch: { accentColor: c.toHexString() } })}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              tints the texture
+            </Typography.Text>
+          </Space>
+        </Space>
+      </Card>
+
+      <Card size="small" title="5. Photo panel & contact bar">
+        <Space direction="vertical" style={{ width: "100%" }} size={16}>
+          <div>
+            <Typography.Text strong style={{ fontSize: 13 }}>
+              Photo panel
+            </Typography.Text>
+            <div style={{ marginTop: 6 }}>
+              <PhotoPanelControls
+                photo={state.panelPhoto}
+                side={state.photoSide}
+                divider={state.photoDivider}
+                zoom={state.photoZoom}
+                focusX={state.photoFocusX}
+                focusY={state.photoFocusY}
+                upload={panelPhotoUpload}
+                onRemove={() => dispatch({ type: "patch", patch: { panelPhoto: null } })}
+                onSide={(s) => dispatch({ type: "patch", patch: { photoSide: s } })}
+                onDivider={(d) => dispatch({ type: "patch", patch: { photoDivider: d } })}
+                onZoom={(v) => dispatch({ type: "patch", patch: { photoZoom: v } })}
+                onFocus={(x, y) => dispatch({ type: "patch", patch: { photoFocusX: x, photoFocusY: y } })}
+              />
+            </div>
+          </div>
+          <div>
+            <Typography.Text strong style={{ fontSize: 13 }}>
+              Contact bar
+            </Typography.Text>
+            <div style={{ marginTop: 6 }}>
+              <ContactBarControls
+                enabled={state.contactBar}
+                website={state.contactWebsite}
+                phone={state.contactPhone}
+                cta={state.contactCta}
+                onToggle={(on) => dispatch({ type: "patch", patch: { contactBar: on } })}
+                onWebsite={(v) => dispatch({ type: "patch", patch: { contactWebsite: v } })}
+                onPhone={(v) => dispatch({ type: "patch", patch: { contactPhone: v } })}
+                onCta={(v) => dispatch({ type: "patch", patch: { contactCta: v } })}
+              />
+            </div>
+          </div>
+        </Space>
+      </Card>
+        </Space>
+
+        <div className="social-preview-col">
+          <Space direction="vertical" size={16} style={{ width: "100%" }} className="social-preview-inner">
       <Card
         size="small"
-        title="4. Previews"
+        title="6. Previews"
         extra={
-          <Checkbox
-            indeterminate={someSelected && !allSelected}
-            checked={allSelected}
-            onChange={(e) =>
-              dispatch({
-                type: "patch",
-                patch: {
-                  selected: {
-                    og: e.target.checked,
-                    linkedin: e.target.checked,
-                    facebook: e.target.checked,
-                    twitter: e.target.checked,
+          <Space size={12}>
+            <Space size={4}>
+              <Switch
+                size="small"
+                checked={state.showSafeZone}
+                onChange={(v) => dispatch({ type: "patch", patch: { showSafeZone: v } })}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Avatar guide
+              </Typography.Text>
+            </Space>
+            <Checkbox
+              indeterminate={someSelected && !allSelected}
+              checked={allSelected}
+              onChange={(e) =>
+                dispatch({
+                  type: "patch",
+                  patch: {
+                    selected: {
+                      og: e.target.checked,
+                      linkedin: e.target.checked,
+                      facebook: e.target.checked,
+                      twitter: e.target.checked,
+                    },
                   },
-                },
-              })
-            }
-          >
-            Select all
-          </Checkbox>
+                })
+              }
+            >
+              Select all
+            </Checkbox>
+          </Space>
         }
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            The dashed circle shows where each platform drops the profile avatar —
+            a preview guide only, never part of the exported image.
+          </Typography.Text>
           {OUTPUTS.map((out) => (
             <PreviewTile
               key={out.id}
@@ -596,7 +930,10 @@ export function SocialPanel() {
           </Typography.Paragraph>
         </Card>
       )}
-    </Space>
+          </Space>
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -22,18 +22,29 @@ export default function App() {
         <div style={{ minHeight: "100dvh", background: "#fafafa" }}>
           <OpsetteHeader />
 
-          <main style={{ maxWidth: 720, margin: "0 auto", padding: "16px" }}>
-            <Segmented
-              block
-              size="large"
-              value={tab}
-              onChange={(v) => setTab(v as "favicon" | "social")}
-              options={[
-                { label: "Favicon", value: "favicon" },
-                { label: "Social & Banners", value: "social" },
-              ]}
-              style={{ marginBottom: 16 }}
-            />
+          <main
+            style={{
+              // Social builder uses a wide two-column layout (controls + sticky
+              // previews); the favicon tool is a single narrow column.
+              maxWidth: tab === "social" ? 1240 : 720,
+              margin: "0 auto",
+              padding: "16px",
+              transition: "max-width 0.2s ease",
+            }}
+          >
+            <div style={{ maxWidth: 720, margin: "0 auto" }}>
+              <Segmented
+                block
+                size="large"
+                value={tab}
+                onChange={(v) => setTab(v as "favicon" | "social")}
+                options={[
+                  { label: "Favicon", value: "favicon" },
+                  { label: "Social & Banners", value: "social" },
+                ]}
+                style={{ marginBottom: 16, width: "100%" }}
+              />
+            </div>
             {tab === "favicon" ? <FaviconPanel /> : <SocialPanel />}
             <Typography.Paragraph
               type="secondary"
