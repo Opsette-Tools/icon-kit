@@ -27,7 +27,7 @@ import {
 } from "../../lib/icon-kit/canvas";
 import { encodeIco } from "../../lib/icon-kit/ico";
 import { downloadBlob, blobToDataUrl } from "../../lib/icon-kit/download";
-import { fromSocialKitJson, type SocialAsset } from "../../lib/icon-kit/brand-kit";
+import { fromSocialKitJson, configForTab, type SocialAsset, type SocialConfig } from "../../lib/icon-kit/brand-kit";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 import { ExportToBoardButton } from "./ExportToBoardButton";
 
@@ -47,6 +47,12 @@ export interface FaviconState {
 }
 // Local alias so the rest of this file reads unchanged.
 type State = FaviconState;
+
+// Signature of a favicon recipe — used to claim a legacy flat `config` for this
+// tab (and reject a social config that lacks these keys).
+export function looksLikeFavicon(c: SocialConfig): boolean {
+  return "tab" in c && ("initialsText" in c || "emoji" in c || "imageDataUrl" in c);
+}
 
 export const FAVICON_KEY = "iconkit.favicon.v1";
 export const faviconInitial: State = {
@@ -320,17 +326,20 @@ export function FaviconPanel() {
       message.error("That doesn't look like an Icon Kit export.");
       return false;
     }
-    const config = parsed.data.config;
+    // Pull THIS tab's recipe (new per-tab shape), falling back to a legacy flat
+    // config only if it looks like favicon state.
+    const config = configForTab(parsed, "favicon", looksLikeFavicon);
     if (!config) {
+      const hasSocial = Boolean(parsed.data.configs?.social);
       message.warning(
-        "This blob has the images but no saved settings (exported before reopen existed). Re-export from a current design to reopen it losslessly.",
+        hasSocial
+          ? "This blob only has the Social & Banners design — switch to that tab and Reopen there."
+          : "This blob has the images but no saved favicon settings. Re-export from a current design to reopen it losslessly.",
       );
       return false;
     }
-    // Only restore keys this panel actually owns — so pasting a social-banner blob
-    // by mistake can't inject unrelated fields into the favicon state. Building the
-    // patch key-by-key (rather than spreading the whole config) also keeps types
-    // honest: each assignment lines up a State key with a State value.
+    // Only restore keys this panel actually owns — so a stray field can't inject
+    // into favicon state. Building the patch key-by-key also keeps types honest.
     const c = config as Partial<State>;
     const patch: Partial<State> = {};
     if (c.tab !== undefined) patch.tab = c.tab;

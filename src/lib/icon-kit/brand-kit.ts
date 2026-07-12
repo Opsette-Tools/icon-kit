@@ -30,31 +30,52 @@ export interface SocialAsset {
  */
 export type SocialConfig = Record<string, unknown>;
 
+/** Which Icon Kit tab a config belongs to. */
+export type KitTab = "social" | "favicon";
+
+/**
+ * Per-tab design recipes. A blob from "export both" carries BOTH, so pasting it
+ * into EITHER tab's Reopen restores that tab losslessly. A single-tab export
+ * carries just that tab's recipe.
+ *
+ * Why this matters (the bug it fixes): the earlier shape had ONE flat `config`,
+ * so a combined export could only carry one tab's recipe (whichever was live) —
+ * pasting into the other tab silently restored nothing. Keying by tab fixes that.
+ */
+export type SocialConfigs = Partial<Record<KitTab, SocialConfig>>;
+
 export interface SocialPayload {
   type: "social";
   v: 1;
   source: "opsette";
   data: {
     assets: SocialAsset[];
-    /** The design recipe for reopen. Optional so old blobs still validate. */
+    /** Per-tab recipes for reopen (new shape). */
+    configs?: SocialConfigs;
+    /**
+     * Legacy single-config field (pre-2026-07-12 blobs). Kept so old exports
+     * still reopen: readers fall back to this when `configs[tab]` is absent.
+     */
     config?: SocialConfig;
   };
 }
 
-/** Build the export blob: rendered images for the board + config for reopen. */
-export function toSocialKitJson(assets: SocialAsset[], config: SocialConfig): SocialPayload {
+/**
+ * Build the export blob: rendered images for the board + per-tab recipes for
+ * reopen. Pass whichever tab configs you have (one or both).
+ */
+export function toSocialKitJson(assets: SocialAsset[], configs: SocialConfigs): SocialPayload {
   return {
     type: "social",
     v: 1,
     source: "opsette",
-    data: { assets, config },
+    data: { assets, configs },
   };
 }
 
 /**
  * Parse a pasted blob. Strict on the envelope (type/v/source) so a random paste
- * is rejected; never throws. Returns the parsed payload (whose `data.config` may
- * be undefined for pre-config blobs) or null for anything that isn't a valid
+ * is rejected; never throws. Returns null for anything that isn't a valid
  * Opsette social blob.
  */
 export function fromSocialKitJson(raw: string): SocialPayload | null {
@@ -70,8 +91,30 @@ export function fromSocialKitJson(raw: string): SocialPayload | null {
   const data = p.data;
   if (typeof data !== "object" || data === null) return null;
   const d = data as Record<string, unknown>;
-  // assets must be an array (may be empty); config is optional.
+  // assets must be an array (may be empty); configs/config are optional.
   if (!Array.isArray(d.assets)) return null;
+  if (d.configs !== undefined && (typeof d.configs !== "object" || d.configs === null)) return null;
   if (d.config !== undefined && (typeof d.config !== "object" || d.config === null)) return null;
   return parsed as SocialPayload;
+}
+
+/**
+ * Resolve the config for a specific tab from a parsed payload, handling both the
+ * new per-tab `configs` shape and the legacy flat `config`.
+ *
+ * Legacy fallback is tab-aware so a legacy favicon blob doesn't get handed to the
+ * social tab (and vice-versa): a flat `config` is claimed by a tab only if it
+ * "looks like" that tab's state. `looksLike` is supplied by the caller (the panel
+ * knows its own signature keys).
+ */
+export function configForTab(
+  payload: SocialPayload,
+  tab: KitTab,
+  looksLike: (c: SocialConfig) => boolean,
+): SocialConfig | null {
+  const byTab = payload.data.configs?.[tab];
+  if (byTab && typeof byTab === "object") return byTab;
+  const legacy = payload.data.config;
+  if (legacy && typeof legacy === "object" && looksLike(legacy)) return legacy;
+  return null;
 }

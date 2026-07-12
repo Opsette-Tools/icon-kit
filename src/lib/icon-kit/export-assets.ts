@@ -30,7 +30,7 @@ import {
   SOCIAL_KEY,
   type SocialState,
 } from "../../components/icon-kit/SocialPanel";
-import { toSocialKitJson, type SocialAsset, type SocialConfig } from "./brand-kit";
+import { toSocialKitJson, type SocialAsset, type SocialConfig, type SocialConfigs } from "./brand-kit";
 
 // Read a tab's persisted state, merged onto its initial so missing/old fields are
 // always present. Returns `initial` if nothing's saved yet.
@@ -87,10 +87,15 @@ export async function buildCombinedExport(
   if (wantSocial) assets.push(...(await buildSocialAssets(social)));
   if (wantFavicon) assets.push(...(await buildFaviconAssets(favicon)));
 
-  // Config for reopen = the tab the user is on, so pasting the blob back into that
-  // tab's Reopen rebuilds what they were editing. (The other tab's design still
-  // travels as rendered assets; only one tab's editable recipe fits one blob.)
-  const config = liveState as unknown as SocialConfig;
-  const payload = toSocialKitJson(assets, config);
+  // Reopen recipes, keyed by tab. We attach a tab's config whenever that tab is
+  // part of this export, so pasting the blob back into EITHER tab's Reopen
+  // restores that tab. (The old bug: a single flat config only carried the live
+  // tab's recipe, so "export both" left the other tab un-reopenable.) The live
+  // tab's config comes from its in-memory state (freshest); the other from
+  // localStorage.
+  const configs: SocialConfigs = {};
+  if (wantSocial) configs.social = social as unknown as SocialConfig;
+  if (wantFavicon) configs.favicon = favicon as unknown as SocialConfig;
+  const payload = toSocialKitJson(assets, configs);
   return { json: JSON.stringify(payload), assetCount: assets.length };
 }

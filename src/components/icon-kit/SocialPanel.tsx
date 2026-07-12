@@ -37,7 +37,7 @@ import {
   type TextureKind,
   type WatermarkEdge,
 } from "../../lib/icon-kit/social-design";
-import { fromSocialKitJson, type SocialAsset } from "../../lib/icon-kit/brand-kit";
+import { fromSocialKitJson, configForTab, type SocialAsset, type SocialConfig } from "../../lib/icon-kit/brand-kit";
 import { ExportToBoardButton } from "./ExportToBoardButton";
 import { downloadBlob, blobToDataUrl } from "../../lib/icon-kit/download";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
@@ -150,6 +150,12 @@ export interface SocialState {
 }
 // Local alias so the rest of this file reads unchanged.
 type State = SocialState;
+
+// Signature of a social/banner recipe — used to claim a legacy flat `config`
+// for this tab (and reject a favicon config that lacks these keys).
+export function looksLikeSocial(c: SocialConfig): boolean {
+  return "headline" in c && "layouts" in c && "texture" in c;
+}
 
 export const SOCIAL_KEY = "iconkit.social.v2";
 export const socialInitial: State = {
@@ -571,15 +577,35 @@ export function SocialPanel() {
   // Strict on the envelope; if the blob predates the `config` field (older
   // exports carried only images), we say so rather than silently doing nothing.
   function reopenFromBlob(raw: string): boolean {
+    // Also accept a BARE config object pasted straight from localStorage
+    // (`iconkit.social.v2`) — not just the full {type,v,source,data} blob. This
+    // is the recovery path for a design that was only ever persisted locally.
+    try {
+      const bare = JSON.parse(raw.trim());
+      if (bare && typeof bare === "object" && looksLikeSocial(bare)) {
+        dispatch({ type: "patch", patch: bare as Partial<typeof state> });
+        message.success("Design reopened — every control is restored.");
+        return true;
+      }
+    } catch {
+      /* not bare JSON — fall through to the blob path */
+    }
+
     const parsed = fromSocialKitJson(raw);
     if (!parsed) {
-      message.error("That doesn't look like an Icon Kit social export.");
+      message.error("That doesn't look like an Icon Kit export.");
       return false;
     }
-    const config = parsed.data.config;
+    // Pull THIS tab's recipe. `looksLikeSocial` claims a legacy flat config only
+    // if it's actually banner state (has a headline + layouts) — so a favicon
+    // blob won't get mis-applied here (the exact bug we hit).
+    const config = configForTab(parsed, "social", looksLikeSocial);
     if (!config) {
+      const hasFavicon = Boolean(parsed.data.configs?.favicon);
       message.warning(
-        "This blob has the images but no saved design settings (exported before reopen existed). Re-export from a current design to reopen it losslessly.",
+        hasFavicon
+          ? "This blob only has the Favicon design — switch to the Favicon tab and Reopen there. (Re-export from Social & Banners to save the banner design too.)"
+          : "This blob has the images but no saved banner settings. Re-export from a current design to reopen it losslessly.",
       );
       return false;
     }
