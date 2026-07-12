@@ -30,7 +30,7 @@ export default function App() {
               onChange={(v) => setTab(v as "favicon" | "social")}
               options={[
                 { label: "Favicon", value: "favicon" },
-                { label: "Social Image", value: "social" },
+                { label: "Social & Banners", value: "social" },
               ]}
               style={{ marginBottom: 16 }}
             />

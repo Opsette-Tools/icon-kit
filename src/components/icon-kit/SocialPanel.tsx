@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   App,
   Button,
   Card,
+  Checkbox,
   ColorPicker,
   Input,
   Radio,
@@ -12,18 +13,73 @@ import {
   Upload,
 } from "antd";
 import type { UploadProps } from "antd";
-import { DownloadOutlined, InboxOutlined } from "@ant-design/icons";
+import { DownloadOutlined, InboxOutlined, ExportOutlined } from "@ant-design/icons";
 
-import { canvasToBlob, renderSocial, type SocialBg, type SocialLayout, type SocialOpts } from "../../lib/icon-kit/canvas";
+import {
+  BANNER_SIZES,
+  canvasToBlob,
+  renderBanner,
+  renderSocial,
+  type BannerLayout,
+  type BannerPlatform,
+  type SocialBg,
+  type SocialLayout,
+} from "../../lib/icon-kit/canvas";
 import { downloadBlob } from "../../lib/icon-kit/download";
+import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 
 type BgKind = "solid" | "gradient" | "image";
 
+// Every output the panel can produce. The OG card and the three banners all draw
+// from ONE shared config — the only thing that differs is which renderer + size,
+// and each output's own layout choice. That's the whole point of the redesign:
+// build the design once, get every platform at once.
+type OutputId = "og" | BannerPlatform;
+
+interface OutputDef {
+  id: OutputId;
+  label: string;
+  w: number;
+  h: number;
+  file: string;
+  kind: "card" | "banner";
+  /** Board asset label + hint when exported. */
+  boardLabel: string;
+  boardKind: string;
+}
+
+const OUTPUTS: OutputDef[] = [
+  {
+    id: "og",
+    label: "Social card",
+    w: 1200,
+    h: 630,
+    file: "og-image.png",
+    kind: "card",
+    boardLabel: "Social card",
+    boardKind: "card",
+  },
+  ...BANNER_SIZES.map<OutputDef>((b) => ({
+    id: b.id,
+    label: b.label,
+    w: b.w,
+    h: b.h,
+    file: b.file,
+    kind: "banner",
+    boardLabel: `${b.label} banner`,
+    boardKind: "banner",
+  })),
+];
+
+// Per-output layout. OG has three layouts; banners have two. We keep a layout
+// choice per output id so tuning the wide LinkedIn strip doesn't disturb the card.
+type AnyLayout = SocialLayout | BannerLayout;
+
 interface State {
+  // Shared content — entered once, drives every preview.
   headline: string;
   subhead: string;
   logoDataUrl: string | null;
-  layout: SocialLayout;
   bgKind: BgKind;
   solidColor: string;
   gradFrom: string;
@@ -32,13 +88,16 @@ interface State {
   bgImage: string | null;
   overlay: number;
   textColor: string;
+  // Per-output layout choices.
+  layouts: Record<OutputId, AnyLayout>;
+  // Which outputs are selected for export / download-all.
+  selected: Record<OutputId, boolean>;
 }
 
 const initial: State = {
-  headline: "Ship icons in seconds",
-  subhead: "A tiny browser tool for favicons and OG images.",
+  headline: "Acme Studio",
+  subhead: "Design that ships.",
   logoDataUrl: null,
-  layout: "centered",
   bgKind: "gradient",
   solidColor: "#2f4f46",
   gradFrom: "#2f4f46",
@@ -47,11 +106,24 @@ const initial: State = {
   bgImage: null,
   overlay: 0.35,
   textColor: "#ffffff",
+  layouts: { og: "centered", linkedin: "left", facebook: "centered", twitter: "left" },
+  selected: { og: true, linkedin: true, facebook: true, twitter: true },
 };
 
-type Action = { type: "patch"; patch: Partial<State> };
+type Action =
+  | { type: "patch"; patch: Partial<State> }
+  | { type: "setLayout"; id: OutputId; layout: AnyLayout }
+  | { type: "toggle"; id: OutputId; on: boolean };
+
 function reducer(s: State, a: Action): State {
-  return { ...s, ...a.patch };
+  switch (a.type) {
+    case "patch":
+      return { ...s, ...a.patch };
+    case "setLayout":
+      return { ...s, layouts: { ...s.layouts, [a.id]: a.layout } };
+    case "toggle":
+      return { ...s, selected: { ...s.selected, [a.id]: a.on } };
+  }
 }
 
 function buildBg(s: State): SocialBg {
@@ -79,41 +151,149 @@ function escapeAttr(s: string) {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function SocialPanel() {
-  const [state, dispatch] = useReducer(reducer, initial);
-  const [busy, setBusy] = useState(false);
-  const { message } = App.useApp();
-  const previewWrap = useRef<HTMLDivElement>(null);
+// Render one output to a canvas. OG uses renderSocial (photo bg allowed); banners
+// use renderBanner. Banners force solid/gradient (image bg falls back inside the
+// renderer), so a photo background only affects the OG card.
+async function renderOutput(out: OutputDef, s: State): Promise<HTMLCanvasElement> {
+  const background = buildBg(s);
+  if (out.id === "og") {
+    return renderSocial({
+      headline: s.headline,
+      subhead: s.subhead,
+      logoDataUrl: s.logoDataUrl ?? undefined,
+      background,
+      layout: s.layouts.og as SocialLayout,
+      textColor: s.textColor,
+    });
+  }
+  const size = BANNER_SIZES.find((b) => b.id === out.id)!;
+  return renderBanner({
+    size,
+    name: s.headline,
+    tagline: s.subhead,
+    logoDataUrl: s.logoDataUrl ?? undefined,
+    background,
+    layout: s.layouts[out.id] as BannerLayout,
+    textColor: s.textColor,
+  });
+}
 
-  const opts: SocialOpts = useMemo(
-    () => ({
-      headline: state.headline,
-      subhead: state.subhead,
-      logoDataUrl: state.logoDataUrl ?? undefined,
-      background: buildBg(state),
-      layout: state.layout,
-      textColor: state.textColor,
-    }),
-    [state],
+// A single preview tile: live canvas + select checkbox + per-tile layout + download.
+function PreviewTile({
+  out,
+  state,
+  dispatch,
+  onDownload,
+}: {
+  out: OutputDef;
+  state: State;
+  dispatch: React.Dispatch<Action>;
+  onDownload: (out: OutputDef) => void;
+}) {
+  const wrap = useRef<HTMLDivElement>(null);
+  // Only re-render this tile when something that affects IT changes.
+  const key = useMemo(
+    () =>
+      JSON.stringify({
+        h: state.headline,
+        s: state.subhead,
+        logo: state.logoDataUrl,
+        bg: buildBg(state),
+        tc: state.textColor,
+        layout: state.layouts[out.id],
+      }),
+    [state, out.id],
   );
 
   useEffect(() => {
     let alive = true;
-    if (!previewWrap.current) return;
+    if (!wrap.current) return;
     (async () => {
-      const canvas = await renderSocial(opts);
-      if (!alive || !previewWrap.current) return;
-      previewWrap.current.innerHTML = "";
+      const canvas = await renderOutput(out, state);
+      if (!alive || !wrap.current) return;
+      wrap.current.innerHTML = "";
+      // Let the canvas define its own size: full container width, height derived
+      // from its intrinsic ratio. No competing aspect-ratio box on the wrapper
+      // (that left a white sliver when the two ratios disagreed by a pixel).
       canvas.style.width = "100%";
       canvas.style.height = "auto";
-      canvas.style.borderRadius = "8px";
+      canvas.style.borderRadius = "6px";
       canvas.style.display = "block";
-      previewWrap.current.appendChild(canvas);
+      wrap.current.appendChild(canvas);
     })();
     return () => {
       alive = false;
     };
-  }, [opts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const isOg = out.id === "og";
+
+  return (
+    <Card
+      size="small"
+      styles={{ body: { padding: 12 } }}
+      style={{ borderColor: state.selected[out.id] ? "#2f4f46" : undefined }}
+    >
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Checkbox
+            checked={state.selected[out.id]}
+            onChange={(e) => dispatch({ type: "toggle", id: out.id, on: e.target.checked })}
+          >
+            <strong>{out.label}</strong>{" "}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {out.w}×{out.h}
+            </Typography.Text>
+          </Checkbox>
+          <Button size="small" icon={<DownloadOutlined />} onClick={() => onDownload(out)}>
+            PNG
+          </Button>
+        </div>
+
+        <div
+          ref={wrap}
+          style={{
+            width: "100%",
+            // Reserve height by ratio only until the canvas paints, then the
+            // canvas (width:100%, height:auto) governs. No bg fill so nothing
+            // shows through beside the image.
+            minHeight: 1,
+            borderRadius: 6,
+            overflow: "hidden",
+            border: "1px solid #f0f0f0",
+          }}
+        />
+
+        <Radio.Group
+          size="small"
+          value={state.layouts[out.id]}
+          onChange={(e) => dispatch({ type: "setLayout", id: out.id, layout: e.target.value })}
+        >
+          {isOg ? (
+            <>
+              <Radio.Button value="centered">Centered</Radio.Button>
+              <Radio.Button value="logo-tl">Logo TL</Radio.Button>
+              <Radio.Button value="split">Split</Radio.Button>
+            </>
+          ) : (
+            <>
+              <Radio.Button value="left">Left</Radio.Button>
+              <Radio.Button value="centered">Centered</Radio.Button>
+            </>
+          )}
+        </Radio.Group>
+      </Space>
+    </Card>
+  );
+}
+
+export function SocialPanel() {
+  const [state, dispatch] = usePersistentReducer("iconkit.social.v1", reducer, initial);
+  const [busy, setBusy] = useState(false);
+  const { message } = App.useApp();
+
+  const selectedOutputs = OUTPUTS.filter((o) => state.selected[o.id]);
 
   const logoUpload: UploadProps = {
     accept: "image/png,image/jpeg,image/svg+xml",
@@ -139,32 +319,97 @@ export function SocialPanel() {
     },
   };
 
-  async function handleDownload() {
-    setBusy(true);
+  async function downloadOne(out: OutputDef) {
     try {
-      const c = await renderSocial(opts);
+      const c = await renderOutput(out, state);
       const blob = await canvasToBlob(c);
-      downloadBlob(blob, "og-image.png");
-      message.success("Downloaded og-image.png");
+      downloadBlob(blob, out.file);
+      message.success(`Downloaded ${out.file}`);
     } catch (e) {
       console.error(e);
       message.error("Could not generate the image");
+    }
+  }
+
+  async function downloadSelected() {
+    if (selectedOutputs.length === 0) {
+      message.info("Select at least one size to download");
+      return;
+    }
+    setBusy(true);
+    try {
+      for (const out of selectedOutputs) {
+        const c = await renderOutput(out, state);
+        const blob = await canvasToBlob(c);
+        downloadBlob(blob, out.file);
+      }
+      message.success(`Downloaded ${selectedOutputs.length} image(s)`);
+    } catch (e) {
+      console.error(e);
+      message.error("Could not generate the images");
     } finally {
       setBusy(false);
     }
   }
 
+  // Export to Brand Board: emit the `type:"social"` payload the board consumes —
+  // a generic list of labeled image assets, one per SELECTED output. Each carries
+  // its rendered PNG (as a data URL), a board label, a kind hint, and dimensions
+  // so the board sizes wide banners full-width and the card compact. One paste
+  // brings the whole selection over. Matches BRAND-KIT-INTEROP-CONTRACT §5.
+  async function exportToBrandBoard() {
+    if (selectedOutputs.length === 0) {
+      message.info("Select at least one size to export");
+      return;
+    }
+    setBusy(true);
+    try {
+      const assets = [];
+      for (const out of selectedOutputs) {
+        const c = await renderOutput(out, state);
+        const blob = await canvasToBlob(c);
+        const image = await blobToDataUrl(blob);
+        assets.push({
+          image,
+          label: out.boardLabel,
+          kind: out.boardKind,
+          width: out.w,
+          height: out.h,
+        });
+      }
+      const payload = { type: "social", v: 1, source: "opsette", data: { assets } };
+      await navigator.clipboard.writeText(JSON.stringify(payload));
+      message.success(
+        `Copied ${assets.length} asset(s) — paste into Brand Board's Social field`,
+      );
+    } catch (e) {
+      console.error(e);
+      message.error("Could not export to Brand Board");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const allSelected = OUTPUTS.every((o) => state.selected[o.id]);
+  const someSelected = OUTPUTS.some((o) => state.selected[o.id]);
+  const ogSelected = state.selected.og;
+
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card size="small" title="1. Text">
+      <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
+        Design once — every size renders below. Check the ones you want, then
+        download them or export the set to Brand Board.
+      </Typography.Paragraph>
+
+      <Card size="small" title="1. Brand name & tagline">
         <Space direction="vertical" style={{ width: "100%" }}>
           <Input
-            placeholder="Headline"
+            placeholder="Brand name / headline"
             value={state.headline}
             onChange={(e) => dispatch({ type: "patch", patch: { headline: e.target.value } })}
           />
           <Input
-            placeholder="Subhead (optional)"
+            placeholder="Tagline / subhead (optional)"
             value={state.subhead}
             onChange={(e) => dispatch({ type: "patch", patch: { subhead: e.target.value } })}
           />
@@ -248,6 +493,10 @@ export function SocialPanel() {
                   {state.bgImage ? "Replace image" : "Upload background"}
                 </Button>
               </Upload>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Photo background applies to the Social card only — banners use the
+                solid/gradient color.
+              </Typography.Text>
               <div>
                 <Typography.Text type="secondary">
                   Darken — {Math.round(state.overlay * 100)}%
@@ -266,49 +515,96 @@ export function SocialPanel() {
         </Space>
       </Card>
 
-      <Card size="small" title="4. Layout">
-        <Radio.Group
-          value={state.layout}
-          onChange={(e) => dispatch({ type: "patch", patch: { layout: e.target.value } })}
-        >
-          <Radio.Button value="centered">Centered</Radio.Button>
-          <Radio.Button value="logo-tl">Logo TL + Left</Radio.Button>
-          <Radio.Button value="split">Split</Radio.Button>
-        </Radio.Group>
-      </Card>
-
-      <Card size="small" title="Preview (1200×630)">
-        <div ref={previewWrap} style={{ width: "100%", aspectRatio: "1200 / 630", background: "#eee", borderRadius: 8 }} />
-      </Card>
-
-      <Button
-        type="primary"
-        size="large"
-        icon={<DownloadOutlined />}
-        loading={busy}
-        onClick={handleDownload}
-        block
+      <Card
+        size="small"
+        title="4. Previews"
+        extra={
+          <Checkbox
+            indeterminate={someSelected && !allSelected}
+            checked={allSelected}
+            onChange={(e) =>
+              dispatch({
+                type: "patch",
+                patch: {
+                  selected: {
+                    og: e.target.checked,
+                    linkedin: e.target.checked,
+                    facebook: e.target.checked,
+                    twitter: e.target.checked,
+                  },
+                },
+              })
+            }
+          >
+            Select all
+          </Checkbox>
+        }
       >
-        Download og-image.png
-      </Button>
-
-      <Card size="small" title="<head> snippet">
-        <Typography.Paragraph
-          copyable={{ text: metaSnippet(state.headline, state.subhead) }}
-          style={{
-            background: "#0e1a17",
-            color: "#d8efe7",
-            padding: 12,
-            borderRadius: 6,
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            fontSize: 12,
-            whiteSpace: "pre-wrap",
-            margin: 0,
-          }}
-        >
-          {metaSnippet(state.headline, state.subhead)}
-        </Typography.Paragraph>
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          {OUTPUTS.map((out) => (
+            <PreviewTile
+              key={out.id}
+              out={out}
+              state={state}
+              dispatch={dispatch}
+              onDownload={downloadOne}
+            />
+          ))}
+        </Space>
       </Card>
+
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <Button
+          type="primary"
+          size="large"
+          icon={<ExportOutlined />}
+          loading={busy}
+          onClick={exportToBrandBoard}
+          disabled={!someSelected}
+          block
+        >
+          Export selected to Brand Board
+        </Button>
+        <Button
+          size="large"
+          icon={<DownloadOutlined />}
+          loading={busy}
+          onClick={downloadSelected}
+          disabled={!someSelected}
+          block
+        >
+          Download selected as PNG
+        </Button>
+      </Space>
+
+      {ogSelected && (
+        <Card size="small" title="<head> snippet (for the Social card)">
+          <Typography.Paragraph
+            copyable={{ text: metaSnippet(state.headline, state.subhead) }}
+            style={{
+              background: "#0e1a17",
+              color: "#d8efe7",
+              padding: 12,
+              borderRadius: 6,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontSize: 12,
+              whiteSpace: "pre-wrap",
+              margin: 0,
+            }}
+          >
+            {metaSnippet(state.headline, state.subhead)}
+          </Typography.Paragraph>
+        </Card>
+      )}
     </Space>
   );
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }

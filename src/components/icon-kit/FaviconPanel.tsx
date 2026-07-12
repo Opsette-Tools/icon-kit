@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Card,
@@ -26,6 +26,7 @@ import {
 } from "../../lib/icon-kit/canvas";
 import { encodeIco } from "../../lib/icon-kit/ico";
 import { downloadBlob } from "../../lib/icon-kit/download";
+import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 
 type SourceTab = "image" | "initials" | "emoji";
 
@@ -90,7 +91,7 @@ function htmlSnippet(themeColor: string) {
 }
 
 export function FaviconPanel() {
-  const [state, dispatch] = useReducer(reducer, initial);
+  const [state, dispatch] = usePersistentReducer("iconkit.favicon.v1", reducer, initial);
   const { message } = App.useApp();
   const [busy, setBusy] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);

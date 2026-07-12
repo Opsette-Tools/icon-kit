@@ -401,3 +401,197 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
 
   return canvas;
 }
+
+// ===== Social profile banners =====
+// The three cover/banner sizes a brand kit is expected to ship. These are wide,
+// short strips whose "safe zone" (the area not cropped by the round avatar or a
+// centered card frame) differs per platform, so we frame content toward the
+// side/center that stays visible rather than the OG image's full-bleed center.
+
+export interface BannerSize {
+  id: BannerPlatform;
+  label: string;
+  w: number;
+  h: number;
+  file: string;
+}
+
+export type BannerPlatform = "linkedin" | "facebook" | "twitter";
+
+export const BANNER_SIZES: BannerSize[] = [
+  { id: "linkedin", label: "LinkedIn", w: 1584, h: 396, file: "linkedin-banner.png" },
+  { id: "facebook", label: "Facebook", w: 820, h: 312, file: "facebook-cover.png" },
+  { id: "twitter", label: "Twitter / X", w: 1500, h: 500, file: "twitter-header.png" },
+];
+
+export type BannerLayout = "left" | "centered";
+
+export interface BannerOpts {
+  size: BannerSize;
+  name: string;
+  tagline: string;
+  logoDataUrl?: string;
+  background: SocialBg;
+  layout: BannerLayout;
+  textColor: string;
+}
+
+function paintBackground(ctx: CanvasRenderingContext2D, bg: SocialBg, W: number, H: number) {
+  if (bg.type === "solid") {
+    ctx.fillStyle = bg.color;
+    ctx.fillRect(0, 0, W, H);
+  } else if (bg.type === "gradient") {
+    const a = (bg.angle * Math.PI) / 180;
+    const x = Math.cos(a);
+    const y = Math.sin(a);
+    const cx = W / 2;
+    const cy = H / 2;
+    const half = Math.abs(x) * (W / 2) + Math.abs(y) * (H / 2);
+    const grad = ctx.createLinearGradient(cx - x * half, cy - y * half, cx + x * half, cy + y * half);
+    grad.addColorStop(0, bg.from);
+    grad.addColorStop(1, bg.to);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement> {
+  await ensureInter();
+  const { w: W, h: H } = opts.size;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  const bg = opts.background;
+  if (bg.type === "image") {
+    // Banners take solid/gradient only; fall back to solid if an image slips in.
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, W, H);
+  } else {
+    paintBackground(ctx, bg, W, H);
+  }
+
+  // Scale paddings/type off the (short) height so all three sizes look consistent.
+  const pad = Math.round(H * 0.16);
+  const textColor = opts.textColor;
+
+  let logoImg: HTMLImageElement | null = null;
+  if (opts.logoDataUrl) {
+    try {
+      logoImg = await loadImage(opts.logoDataUrl);
+    } catch {
+      logoImg = null;
+    }
+  }
+
+  const hasName = Boolean(opts.name.trim());
+  const hasTag = Boolean(opts.tagline.trim());
+  const nameMax = Math.round(H * 0.26);
+  const nameMin = Math.round(H * 0.12);
+  const tagSize = Math.max(14, Math.round(H * 0.075));
+  const logoH = Math.round(H * 0.42);
+
+  // ---- Safe zone ----
+  // All three platforms overlay a round profile avatar in the BOTTOM-LEFT of the
+  // banner, plus each crops differently. The single biggest quality tell is
+  // keeping the logo/name/tagline clear of that avatar. `avatarSafe` is the
+  // horizontal width (from the left edge) the avatar+its margin occupy; content
+  // in the "left" layout starts to the right of it, and the whole block sits in
+  // the upper 2/3 so it never collides with the bottom-left circle.
+  const AVATAR_SAFE: Record<BannerPlatform, number> = {
+    // fraction of width the bottom-left avatar + breathing room reserves
+    linkedin: 0.14,
+    facebook: 0.22,
+    twitter: 0.16,
+  };
+  const avatarSafeX = Math.round(W * AVATAR_SAFE[opts.size.id]);
+  // Vertical anchor: bias content upward so it clears the bottom avatar band.
+  const safeMidY = H * 0.42;
+
+  ctx.fillStyle = textColor;
+
+  if (opts.layout === "centered") {
+    // Centered horizontally (avatar hugs the far-left edge, so true-center text
+    // clears it) but biased UP so it sits above the bottom-left avatar band.
+    const maxW = W * 0.7;
+    const blocks: number[] = [];
+    if (logoImg) blocks.push(logoH);
+    let nameSize = 0;
+    let nameLines: string[] = [];
+    if (hasName) {
+      const fit = fitHeadline(ctx, opts.name.trim(), maxW, 1, nameMax, nameMin);
+      nameSize = fit.size;
+      nameLines = fit.lines;
+      blocks.push(nameSize);
+    }
+    if (hasTag) blocks.push(tagSize);
+    const gap = Math.round(H * 0.06);
+    const totalH = blocks.reduce((s, b) => s + b, 0) + gap * Math.max(0, blocks.length - 1);
+    let cursorY = safeMidY - totalH / 2;
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    if (logoImg) {
+      const lw = (logoImg.width / logoImg.height) * logoH;
+      ctx.drawImage(logoImg, W / 2 - lw / 2, cursorY, lw, logoH);
+      cursorY += logoH + gap;
+    }
+    if (hasName) {
+      ctx.font = `800 ${nameSize}px "Inter", system-ui, sans-serif`;
+      ctx.fillStyle = textColor;
+      ctx.fillText(nameLines[0] ?? opts.name.trim(), W / 2, cursorY);
+      cursorY += nameSize + gap;
+    }
+    if (hasTag) {
+      ctx.font = `500 ${tagSize}px "Inter", system-ui, sans-serif`;
+      ctx.fillStyle = textColor;
+      ctx.globalAlpha = 0.85;
+      ctx.fillText(opts.tagline.trim(), W / 2, cursorY);
+      ctx.globalAlpha = 1;
+    }
+  } else {
+    // Left layout: logo + name + tagline, left-aligned, but starting to the RIGHT
+    // of the avatar-safe column and biased upward — so the bottom-left avatar
+    // never lands on top of the brand. This is the safe-zone-correct default.
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const startX = Math.max(pad, avatarSafeX);
+    const maxW = W - startX - pad;
+    let x = startX;
+
+    if (logoImg) {
+      const lw = (logoImg.width / logoImg.height) * logoH;
+      ctx.drawImage(logoImg, x, safeMidY - logoH / 2, lw, logoH);
+      x += lw + Math.round(H * 0.12);
+    }
+
+    let nameSize = 0;
+    let nameLines: string[] = [];
+    if (hasName) {
+      const fit = fitHeadline(ctx, opts.name.trim(), maxW - (x - startX), 1, nameMax, nameMin);
+      nameSize = fit.size;
+      nameLines = fit.lines;
+    }
+    const gap = Math.round(H * 0.05);
+    const blockH = (hasName ? nameSize : 0) + (hasName && hasTag ? gap : 0) + (hasTag ? tagSize : 0);
+    let y = safeMidY - blockH / 2;
+    if (hasName) {
+      ctx.font = `800 ${nameSize}px "Inter", system-ui, sans-serif`;
+      ctx.fillStyle = textColor;
+      ctx.fillText(nameLines[0] ?? opts.name.trim(), x, y);
+      y += nameSize + gap;
+    }
+    if (hasTag) {
+      ctx.font = `500 ${tagSize}px "Inter", system-ui, sans-serif`;
+      ctx.fillStyle = textColor;
+      ctx.globalAlpha = 0.85;
+      ctx.fillText(opts.tagline.trim(), x, y);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  return canvas;
+}
