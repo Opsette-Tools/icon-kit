@@ -13,6 +13,27 @@
 // eyebrow + tagline. `weights` is the exact set the canvas needs so we only
 // fetch what we draw.
 
+import {
+  FONT_PAIRINGS,
+  cssFamily,
+  googleHref,
+  pairingLabel,
+  heaviestWeight,
+  lightestWeight,
+  getPairing,
+  type FontPairing,
+} from "@/lib/shared-fonts";
+
+// Re-export the library's heading-first pairing API so the panel can offer a
+// "choose a heading → suggest a body" picker straight from this module.
+export {
+  suggestBodyFonts,
+  defaultBodyFor,
+  HEADING_FONTS,
+  type BodySuggestion,
+  type HeadingOption,
+} from "@/lib/shared-fonts";
+
 export type FontPair = {
   id: string;
   label: string;
@@ -26,132 +47,30 @@ export type FontPair = {
   bodyWeight: number;
 };
 
-export const FONT_PAIRS: FontPair[] = [
-  {
-    id: "inter",
-    label: "Inter",
-    heading: "Inter",
-    body: "Inter",
-    headingFamily: '"Inter", system-ui, sans-serif',
-    bodyFamily: '"Inter", system-ui, sans-serif',
-    googleHref: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
-    headingWeight: 800,
-    bodyWeight: 500,
-  },
-  {
-    id: "playfair-source",
-    label: "Playfair Display / Source Sans",
-    heading: "Playfair Display",
-    body: "Source Sans 3",
-    headingFamily: '"Playfair Display", serif',
-    bodyFamily: '"Source Sans 3", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=Source+Sans+3:wght@400;600&display=swap",
-    headingWeight: 800,
-    bodyWeight: 600,
-  },
-  {
-    id: "poppins-inter",
-    label: "Poppins / Inter",
-    heading: "Poppins",
-    body: "Inter",
-    headingFamily: '"Poppins", sans-serif',
-    bodyFamily: '"Inter", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@600;700&display=swap",
-    headingWeight: 700,
-    bodyWeight: 500,
-  },
-  {
-    id: "space-inter",
-    label: "Space Grotesk / Inter",
-    heading: "Space Grotesk",
-    body: "Inter",
-    headingFamily: '"Space Grotesk", sans-serif',
-    bodyFamily: '"Inter", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap",
-    headingWeight: 700,
-    bodyWeight: 500,
-  },
-  {
-    id: "dmserif-dmsans",
-    label: "DM Serif Display / DM Sans",
-    heading: "DM Serif Display",
-    body: "DM Sans",
-    headingFamily: '"DM Serif Display", serif',
-    bodyFamily: '"DM Sans", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Serif+Display&display=swap",
-    headingWeight: 400, // DM Serif Display only ships one weight
-    bodyWeight: 500,
-  },
-  {
-    id: "fraunces-nunito",
-    label: "Fraunces / Nunito Sans",
-    heading: "Fraunces",
-    body: "Nunito Sans",
-    headingFamily: '"Fraunces", serif',
-    bodyFamily: '"Nunito Sans", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Nunito+Sans:wght@400;600&display=swap",
-    headingWeight: 700,
-    bodyWeight: 600,
-  },
-  {
-    id: "sora-inter",
-    label: "Sora / Inter",
-    heading: "Sora",
-    body: "Inter",
-    headingFamily: '"Sora", sans-serif',
-    bodyFamily: '"Inter", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700&display=swap",
-    headingWeight: 700,
-    bodyWeight: 500,
-  },
-  {
-    id: "montserrat-opensans",
-    label: "Montserrat / Open Sans",
-    heading: "Montserrat",
-    body: "Open Sans",
-    headingFamily: '"Montserrat", sans-serif',
-    bodyFamily: '"Open Sans", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Open+Sans:wght@400;600&display=swap",
-    headingWeight: 800,
-    bodyWeight: 600,
-  },
-  {
-    id: "archivo-inter",
-    label: "Archivo / Inter",
-    heading: "Archivo",
-    body: "Inter",
-    headingFamily: '"Archivo", sans-serif',
-    bodyFamily: '"Inter", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Inter:wght@400;500;600&display=swap",
-    headingWeight: 800,
-    bodyWeight: 500,
-  },
-  {
-    id: "lora-inter",
-    label: "Lora / Inter",
-    heading: "Lora",
-    body: "Inter",
-    headingFamily: '"Lora", serif',
-    bodyFamily: '"Inter", system-ui, sans-serif',
-    googleHref:
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lora:wght@600;700&display=swap",
-    headingWeight: 700,
-    bodyWeight: 500,
-  },
-];
+// Adapt a shared-library pairing to Icon Kit's FontPair shape. The heading is
+// drawn at its heaviest declared weight (brand name wants weight); the body at
+// its lightest (comfortable eyebrow/tagline). The eyebrow is always drawn at
+// 600 by the canvas, independent of these.
+function toFontPair(p: FontPairing): FontPair {
+  return {
+    id: p.id,
+    label: pairingLabel(p),
+    heading: p.heading.family,
+    body: p.body.family,
+    headingFamily: cssFamily(p.heading),
+    bodyFamily: cssFamily(p.body),
+    googleHref: googleHref(p),
+    headingWeight: heaviestWeight(p.heading),
+    bodyWeight: lightestWeight(p.body),
+  };
+}
+
+export const FONT_PAIRS: FontPair[] = FONT_PAIRINGS.map(toFontPair);
 
 export const DEFAULT_FONT_ID = "inter";
 
 export function getFontPair(id: string): FontPair {
-  return FONT_PAIRS.find((f) => f.id === id) ?? FONT_PAIRS[0];
+  return toFontPair(getPairing(id));
 }
 
 // Load a font pairing into the document so the canvas can draw with it. Idempotent.
