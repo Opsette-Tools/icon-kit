@@ -4,9 +4,26 @@ import { OpsetteHeader } from "./components/opsette-header";
 import { OpsetteFooterLogo } from "./components/opsette-share";
 import { FaviconPanel } from "./components/icon-kit/FaviconPanel";
 import { SocialPanel } from "./components/icon-kit/SocialPanel";
+import { readSeedFromUrl, clearLinkParams } from "./lib/opsette-kit-link";
+import { applyIconKitSeed } from "./lib/seed";
+
+// Apply a ?seed= brand core (Mechanism 1) ONCE, synchronously, before the panels
+// mount — it's merged into both panels' localStorage so they hydrate branded.
+// Returns whether a seed landed, so the default tab can jump to Social (the
+// banner is the thing you want to see branded first). Cleared from the URL after.
+function consumeSeed(): boolean {
+  const core = readSeedFromUrl();
+  if (!core) return false;
+  applyIconKitSeed(core);
+  clearLinkParams();
+  return true;
+}
 
 export default function App() {
-  const [tab, setTab] = useState<"favicon" | "social">("favicon");
+  // Lazy init runs consumeSeed exactly once, on first render, before either
+  // panel mounts and hydrates from localStorage.
+  const [seeded] = useState(consumeSeed);
+  const [tab, setTab] = useState<"favicon" | "social">(seeded ? "social" : "favicon");
 
   return (
     <ConfigProvider
