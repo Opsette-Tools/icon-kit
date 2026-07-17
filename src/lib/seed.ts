@@ -10,8 +10,9 @@
 // panels mount. They then hydrate from it naturally, and it persists correctly.
 // The URL param is cleared right after, so it applies exactly once.
 import type { BrandCore } from "./opsette-kit-link";
-import { SOCIAL_KEY, socialInitial } from "@/components/icon-kit/SocialPanel";
-import { FAVICON_KEY, faviconInitial } from "@/components/icon-kit/FaviconPanel";
+import { SOCIAL_KEY, socialInitial, looksLikeSocial } from "@/components/icon-kit/SocialPanel";
+import { FAVICON_KEY, faviconInitial, looksLikeFavicon } from "@/components/icon-kit/FaviconPanel";
+import { fromSocialKitJson, configForTab } from "./icon-kit/brand-kit";
 
 function normalizeHex(hex: string): string | null {
   let h = hex.trim();
@@ -96,4 +97,28 @@ export function applyIconKitSeed(core: BrandCore): void {
     }
   }
   mergeIntoStorage(FAVICON_KEY, faviconInitial, favicon);
+}
+
+/**
+ * Apply a FULL Icon Kit "social" blob (Mechanism 3 embed load) to both panels via
+ * localStorage, using the same reopen recipe the panels' own paste modal uses
+ * (`fromSocialKitJson` → `configForTab`). Unlike the seed (a slim BrandCore), this
+ * is a real exported blob carrying each tab's saved config. We merge whichever
+ * tab configs the blob carries into their storage keys, so a subsequent panel
+ * (re)mount hydrates branded — no props, no tab-switch re-fire.
+ *
+ * Returns which tab to show: "social" if the blob carried a social config (the
+ * banner is what you'd revise first), else "favicon" if only that was present,
+ * else null (nothing usable — leave the tab as-is).
+ */
+export function applyEmbedBlob(raw: string): "social" | "favicon" | null {
+  const parsed = fromSocialKitJson(raw);
+  if (!parsed) return null;
+  const social = configForTab(parsed, "social", looksLikeSocial);
+  const favicon = configForTab(parsed, "favicon", looksLikeFavicon);
+  if (social) mergeIntoStorage(SOCIAL_KEY, socialInitial, social);
+  if (favicon) mergeIntoStorage(FAVICON_KEY, faviconInitial, favicon);
+  if (social) return "social";
+  if (favicon) return "favicon";
+  return null;
 }
