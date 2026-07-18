@@ -8,6 +8,7 @@ import {
   type WatermarkEdge,
   type HighlightStyle,
   hexToRgb,
+  autoTierColor,
   AVATAR_SAFE,
 } from "./social-design";
 
@@ -247,12 +248,28 @@ export interface DuotoneSpec {
   highlight: string; // color for the light end
 }
 
+/**
+ * Per-tier text colors. Each tier (eyebrow / brand name / tagline) can carry its
+ * own color so the three read as a hierarchy instead of one flat block. All are
+ * optional — an unset tier falls back to the base `textColor` (name) or a muted
+ * derivation of it (eyebrow/tagline), so existing designs are unchanged until a
+ * color is chosen. Deliberately NONE of these default to the accent color: an
+ * accent-tinted ambient texture (glow/mesh) would wash out same-hue text.
+ */
+export interface TextColors {
+  eyebrow?: string; // quietest — a muted neutral, default derived from textColor
+  name?: string; // the hero — defaults to the base textColor
+  tagline?: string; // middle — softer than the name, default derived from textColor
+}
+
 /** Optional design layers shared by the OG card and every banner. */
 export interface DesignLayers {
   fontId: string;
   eyebrow?: string; // small ALL-CAPS line above the name
   accentColor: string; // drives texture + watermark tint fallback
   texture: TextureKind;
+  /** Optional per-tier text colors; unset tiers derive from the base textColor. */
+  textColors?: TextColors;
   watermark?: {
     dataUrl: string;
     edge: WatermarkEdge;
@@ -335,6 +352,24 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
+// Resolve the three concrete text-tier colors from the base color + overrides.
+// Defaults (unset tiers): name = base; tagline + eyebrow = muted derivations
+// (see autoTierColor). Deliberately independent of the accent color so an
+// accent-tinted texture can't wash the text out. The mute math lives in
+// social-design.ts so the panel's swatch preview matches exactly.
+interface ResolvedTiers {
+  eyebrow: string;
+  name: string;
+  tagline: string;
+}
+function resolveTextTiers(base: string, tiers: TextColors | undefined): ResolvedTiers {
+  return {
+    name: tiers?.name || base,
+    tagline: tiers?.tagline || autoTierColor("tagline", base),
+    eyebrow: tiers?.eyebrow || autoTierColor("eyebrow", base),
+  };
+}
+
 // Recolor a photo into two brand colors (duotone). We map luminance → a ramp
 // between `shadow` and `highlight`, so the photo adopts the palette instead of
 // clashing with it. Done on an offscreen canvas then drawn as the background.
@@ -404,19 +439,125 @@ function paintWatermark(
   ctx.restore();
 }
 
+// A content bounding box the texture pass must respect. All in canvas pixels.
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Union bounds of a set of rects (with a margin baked in by the caller). Returns
+// null for an empty set, which every texture treats as "no content to avoid."
+function unionRect(rects: Rect[]): Rect | null {
+  if (rects.length === 0) return null;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const r of rects) {
+    x0 = Math.min(x0, r.x);
+    y0 = Math.min(y0, r.y);
+    x1 = Math.max(x1, r.x + r.w);
+    y1 = Math.max(y1, r.y + r.h);
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// From the reserved zone, pick the largest FREE horizontal band (top vs. bottom)
+// and the largest FREE vertical column (left vs. right) around it. Hard-edged
+// textures anchor into these gaps so they never cross the logo/text. When there
+// is no reserved zone we default to the top band / right column (the historic
+// look), so a texture with content-awareness off still lands sensibly.
+interface FreeZones {
+  band: "top" | "bottom";
+  bandY0: number; // top edge of the free band
+  bandY1: number; // bottom edge of the free band
+  column: "left" | "right";
+  colX0: number; // left edge of the free column
+  colX1: number; // right edge of the free column
+}
+
+function freeZones(reserved: Rect | null, W: number, H: number): FreeZones {
+  if (!reserved) {
+    return { band: "top", bandY0: 0, bandY1: H * 0.28, column: "right", colX0: W * 0.62, colX1: W };
+  }
+  const topGap = reserved.y; // free space above the content
+  const bottomGap = H - (reserved.y + reserved.h); // free space below
+  const leftGap = reserved.x; // free space left of the content
+  const rightGap = W - (reserved.x + reserved.w); // free space right
+
+  const band: "top" | "bottom" = topGap >= bottomGap ? "top" : "bottom";
+  const column: "left" | "right" = rightGap >= leftGap ? "right" : "left";
+  return {
+    band,
+    bandY0: band === "top" ? 0 : reserved.y + reserved.h,
+    bandY1: band === "top" ? reserved.y : H,
+    column,
+    colX0: column === "right" ? reserved.x + reserved.w : 0,
+    colX1: column === "right" ? W : reserved.x,
+  };
+}
+
+// Tiny deterministic PRNG (mulberry32) — seeded, so any scattered/jittered
+// texture is stable across renders and identical between preview and export
+// (family rule: never Math.random). Seeded from the canvas size so each banner
+// size gets its own stable pattern.
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Shared inset for hard-edged textures. Every edge accent either sits at THIS
+// clean margin from the canvas edge or bleeds fully to it — never hovers a few
+// pixels short (which reads as a mistake, not a choice). Scaled off the short
+// side so all three banner sizes feel consistent.
+function edgeInset(short: number): number {
+  return Math.round(short * 0.14);
+}
+
+// The top-left "kicker" accent rule's geometry — a short horizontal bar at a
+// clean top-left inset. Exported so renderBanner can reserve the exact band it
+// occupies and push the content below it (the content clears the rule; the rule
+// never moves). `startX` lets the caller align the rule with the content column
+// (e.g. right of the avatar-safe edge) so the kicker sits over the same x as the
+// text it introduces.
+export function accentRuleRect(W: number, H: number, startX: number): Rect {
+  const short = Math.min(W, H);
+  const inset = edgeInset(short);
+  const t = Math.max(3, Math.round(short * 0.03));
+  const len = Math.min(W * 0.16, short * 1.1);
+  return { x: startX, y: inset, w: len, h: t };
+}
+
 // One tasteful geometric element, tinted from the accent color, low alpha.
+// `reserved` is the union of the content boxes (logo + text, already margined).
+// Hard-edged kinds anchor into the free zones around it; ambient kinds ignore it.
+// `contentStartX` aligns edge kickers (accent-rule) with the content column.
 function paintTexture(
   ctx: CanvasRenderingContext2D,
   kind: TextureKind,
   accent: string,
   W: number,
   H: number,
+  reserved: Rect[] = [],
+  contentStartX = 0,
 ) {
   if (kind === "none") return;
   ctx.save();
   const short = Math.min(W, H);
+  const zone = unionRect(reserved);
+  const free = freeZones(zone, W, H);
+
   switch (kind) {
-    case "corner-blob": {
+    // ── Ambient / diffuse (overlap content freely) ──────────────────────────
+    case "corner-glow": {
       // A soft radial glow anchored top-right — reads as depth, not a shape.
       const r = short * 1.1;
       const grad = ctx.createRadialGradient(W, 0, 0, W, 0, r);
@@ -426,100 +567,32 @@ function paintTexture(
       ctx.fillRect(0, 0, W, H);
       break;
     }
-    case "diagonal": {
-      // A single angled color block sweeping off the right side.
-      ctx.fillStyle = withAlpha(accent, 0.16);
-      ctx.beginPath();
-      ctx.moveTo(W * 0.62, 0);
-      ctx.lineTo(W, 0);
-      ctx.lineTo(W, H);
-      ctx.lineTo(W * 0.82, H);
-      ctx.closePath();
-      ctx.fill();
+    case "mesh": {
+      // Two overlapping soft radial blobs in opposite corners — a modern SaaS
+      // gradient-mesh wash. Diffuse, so it sits behind content as pure depth.
+      const blob = (cx: number, cy: number, r: number, a: number) => {
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        g.addColorStop(0, withAlpha(accent, a));
+        g.addColorStop(1, withAlpha(accent, 0));
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+      };
+      blob(W * 0.08, H * 0.12, short * 1.0, 0.22);
+      blob(W * 0.94, H * 0.9, short * 1.15, 0.18);
       break;
     }
-    case "accent-rule": {
-      // A short bright rule in the TOP-left — an editorial kicker that sits
-      // above the content block, so it never collides with centered text lower
-      // down (which the old bottom rule did).
-      const t = Math.max(3, Math.round(short * 0.014));
-      ctx.fillStyle = accent;
-      ctx.globalAlpha = 0.95;
-      const inset = Math.round(W * 0.055);
-      const topY = Math.round(H * 0.12);
-      ctx.fillRect(inset, topY, Math.min(W * 0.14, short * 0.8), t);
-      break;
-    }
-    case "dot-grid": {
-      // A restrained field of dots in the top-right region.
-      const gap = Math.max(18, Math.round(short * 0.06));
-      const dot = Math.max(2, Math.round(short * 0.008));
-      ctx.fillStyle = withAlpha(accent, 0.5);
-      const cols = 6;
-      const rows = 4;
-      const ox = W - gap * (cols + 0.5);
-      const oy = gap * 0.8;
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          ctx.beginPath();
-          ctx.arc(ox + c * gap, oy + r * gap, dot, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-      break;
-    }
-    case "arc-lines": {
-      // Concentric thin arcs radiating from the bottom-right — subtle motion.
-      ctx.strokeStyle = withAlpha(accent, 0.35);
-      ctx.lineWidth = Math.max(2, Math.round(short * 0.006));
-      for (let i = 1; i <= 4; i++) {
-        ctx.beginPath();
-        ctx.arc(W, H, short * (0.3 + i * 0.22), Math.PI, Math.PI * 1.5);
-        ctx.stroke();
-      }
-      break;
-    }
-    case "stripes": {
-      // Thin vertical bars fading in from the right edge — structured/editorial.
-      const barW = Math.max(3, Math.round(short * 0.02));
-      const gap = barW * 2.6;
-      const startX = W * 0.55;
-      for (let x = startX; x < W; x += gap) {
-        // Fade the bars in toward the right so they read as texture, not a fence.
-        const t = (x - startX) / (W - startX); // 0..1
-        ctx.fillStyle = withAlpha(accent, 0.06 + t * 0.22);
-        ctx.fillRect(x, 0, barW, H);
-      }
-      break;
-    }
-    case "confetti": {
-      // Irregular scattered dots + tiny bars — playful, not a rigid grid.
-      // Deterministic pseudo-random (seeded) so preview and export match and we
-      // never touch Math.random (family rule).
-      const rand = mulberry32(0x5eed ^ Math.round(W) ^ (Math.round(H) << 8));
-      const count = 26;
-      for (let i = 0; i < count; i++) {
-        const x = rand() * W;
-        const y = rand() * H;
-        const sz = short * (0.008 + rand() * 0.02);
-        ctx.fillStyle = withAlpha(accent, 0.28 + rand() * 0.3);
-        if (rand() > 0.6) {
-          // small rotated bar
-          ctx.save();
-          ctx.translate(x, y);
-          ctx.rotate((rand() - 0.5) * Math.PI);
-          ctx.fillRect(-sz, -sz * 0.28, sz * 2, sz * 0.56);
-          ctx.restore();
-        } else {
-          ctx.beginPath();
-          ctx.arc(x, y, sz, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
+    case "spotlight": {
+      // A broad soft cone bleeding in from one bottom corner — cinematic depth.
+      const grad = ctx.createRadialGradient(W * 0.85, H * 1.05, 0, W * 0.85, H * 1.05, short * 1.9);
+      grad.addColorStop(0, withAlpha(accent, 0.24));
+      grad.addColorStop(1, withAlpha(accent, 0));
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
       break;
     }
     case "wave-band": {
-      // A soft organic curved band across the bottom — modern SaaS feel.
+      // A soft organic curved band across the bottom — modern SaaS feel. Diffuse
+      // + anchored low, so it reads as ground, not a shape hitting the brand.
       const baseY = H * 0.7;
       const amp = H * 0.12;
       ctx.beginPath();
@@ -541,61 +614,170 @@ function paintTexture(
       ctx.fill();
       break;
     }
-    case "grid-lines": {
-      // Faint blueprint-style crosshatch — technical / architectural.
-      ctx.strokeStyle = withAlpha(accent, 0.14);
-      ctx.lineWidth = Math.max(1, Math.round(short * 0.003));
-      const step = Math.max(28, Math.round(short * 0.11));
-      for (let x = step; x < W; x += step) {
+    case "soft-rays": {
+      // Faint wide light rays fanning from a top corner — diffuse, atmospheric.
+      // Drawn as low-alpha wedges with a soft radial falloff on top so the edges
+      // never read as hard shapes.
+      const originX = W * 0.9;
+      const originY = -H * 0.1;
+      ctx.save();
+      const rays = 7;
+      const spread = Math.PI * 0.6;
+      const base = Math.PI * 0.62; // aim down-left into the canvas
+      for (let i = 0; i < rays; i++) {
+        const a0 = base + (i / rays) * spread;
+        const a1 = a0 + spread / rays / 2; // thin wedge
+        const len = Math.hypot(W, H) * 1.2;
         ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, H);
-        ctx.stroke();
+        ctx.moveTo(originX, originY);
+        ctx.lineTo(originX + Math.cos(a0) * len, originY + Math.sin(a0) * len);
+        ctx.lineTo(originX + Math.cos(a1) * len, originY + Math.sin(a1) * len);
+        ctx.closePath();
+        ctx.fillStyle = withAlpha(accent, 0.05);
+        ctx.fill();
       }
-      for (let y = step; y < H; y += step) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(W, y);
-        ctx.stroke();
-      }
+      // Radial fade so the rays dissolve away from the origin.
+      const fade = ctx.createRadialGradient(originX, originY, 0, originX, originY, Math.hypot(W, H));
+      fade.addColorStop(0, withAlpha(accent, 0.12));
+      fade.addColorStop(1, withAlpha(accent, 0));
+      ctx.fillStyle = fade;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
       break;
     }
-    case "halftone": {
-      // Dots that grow in size across the canvas — a real print-design tell.
-      // Anchored bottom-right; dots shrink toward the top-left so text stays clean.
-      const step = Math.max(16, Math.round(short * 0.055));
-      const maxR = step * 0.44;
-      for (let y = 0; y < H + step; y += step) {
-        for (let x = 0; x < W + step; x += step) {
-          // distance from bottom-right corner, normalized
-          const dx = (W - x) / W;
-          const dy = (H - y) / H;
-          const d = Math.min(1, Math.hypot(dx, dy));
-          const r = maxR * (1 - d); // biggest at bottom-right
-          if (r < 0.5) continue;
-          ctx.fillStyle = withAlpha(accent, 0.4);
+    case "noise-dots": {
+      // A faint even dot stipple across the whole canvas — subtle grain/depth,
+      // like a printed halftone at rest. Diffuse and low-alpha, so it reads as
+      // texture behind everything, not a shape. Seeded jitter (no Math.random)
+      // keeps preview and export identical.
+      const step = Math.max(14, Math.round(short * 0.05));
+      const dot = Math.max(1.2, short * 0.004);
+      const rand = seeded(0x9e37 ^ Math.round(W) ^ (Math.round(H) << 8));
+      ctx.fillStyle = withAlpha(accent, 0.16);
+      for (let y = step; y < H; y += step) {
+        for (let x = step; x < W; x += step) {
+          const jx = (rand() - 0.5) * step * 0.4;
+          const jy = (rand() - 0.5) * step * 0.4;
           ctx.beginPath();
-          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.arc(x + jx, y + jy, dot, 0, Math.PI * 2);
           ctx.fill();
         }
       }
       break;
     }
+
+    // ── Hard-edged (avoid the reserved zone via the free zones) ──────────────
+    case "accent-rule": {
+      // The classic top-left editorial kicker — a short bright rule ABOVE the
+      // content, at a clean top inset (never glued to the ceiling). This is the
+      // fixed-anchor rule: the RULE doesn't move; the content clears it (see
+      // renderBanner, which drops bandTop below this when accent-rule is active).
+      // Aligned to the content column's start x so it introduces the text.
+      const rect = accentRuleRect(W, H, contentStartX || edgeInset(short));
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = 0.95;
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+      break;
+    }
+    case "edge-rule": {
+      // A crisp accent rule sitting in the free horizontal band on the free side.
+      // It anchors ABOVE or BELOW the content (never across it) — the content-
+      // aware, free-side counterpart to accent-rule. Sits at the clean edge inset
+      // so it never hovers a few pixels off the border (the Facebook "stuck to the
+      // ceiling" bug); if the free band is deeper than the inset it centers in it.
+      const t = Math.max(3, Math.round(short * 0.03));
+      const inset = edgeInset(short);
+      const bandH = free.bandY1 - free.bandY0;
+      const bandMid =
+        bandH > inset * 2.4
+          ? (free.band === "top" ? free.bandY1 - inset : free.bandY0 + inset)
+          : free.band === "top"
+            ? free.bandY0 + inset
+            : free.bandY1 - inset;
+      const len = Math.min(W * 0.16, short * 1.1);
+      const xInset = edgeInset(short);
+      const x = free.column === "right" ? free.colX1 - xInset - len : free.colX0 + xInset;
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = 0.95;
+      ctx.fillRect(x, Math.round(bandMid - t / 2), len, t);
+      break;
+    }
+    case "corner-bracket": {
+      // An editorial L-bracket tucked into the free corner. The corner sits at a
+      // clean inset from the CANVAS edge (not the free-band edge) so a thin free
+      // band can't shove it up against the border. It stays inside the free zone
+      // horizontally so it never crosses the content.
+      const t = Math.max(3, Math.round(short * 0.02));
+      const inset = edgeInset(short);
+      const arm = Math.min(short * 0.55, (free.bandY1 - free.bandY0) * 0.7, (free.colX1 - free.colX0) * 0.5);
+      // Corner X: inset from whichever canvas edge the free column hugs.
+      const cornerX = free.column === "right" ? W - inset : inset;
+      // Corner Y: inset from whichever canvas edge the free band hugs.
+      const cornerY = free.band === "top" ? inset : H - inset;
+      const hDir = free.column === "right" ? -1 : 1; // horizontal arm direction
+      const vDir = free.band === "top" ? 1 : -1; // vertical arm direction
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = 0.9;
+      // horizontal arm
+      ctx.fillRect(Math.min(cornerX, cornerX + hDir * arm), cornerY, arm, t);
+      // vertical arm
+      ctx.fillRect(cornerX, Math.min(cornerY, cornerY + vDir * arm), t, arm);
+      break;
+    }
+    case "frame": {
+      // A thin inset keyline around the whole canvas. Where it would cross the
+      // reserved zone we knock out a gap, so the frame politely opens around the
+      // content instead of drawing a line through it.
+      const t = Math.max(2, Math.round(short * 0.008));
+      const m = Math.round(short * 0.09); // inset margin
+      ctx.strokeStyle = withAlpha(accent, 0.55);
+      ctx.lineWidth = t;
+      if (!zone) {
+        ctx.strokeRect(m, m, W - m * 2, H - m * 2);
+      } else {
+        // Draw the four sides as segments, clipping out any run that overlaps
+        // the reserved zone's projection onto that side (with a small gap pad).
+        const pad = Math.round(short * 0.04);
+        const gx0 = zone.x - pad;
+        const gx1 = zone.x + zone.w + pad;
+        const gy0 = zone.y - pad;
+        const gy1 = zone.y + zone.h + pad;
+        const seg = (ax: number, ay: number, bx: number, by: number, cutFrom: number, cutTo: number, horiz: boolean) => {
+          // draw [start..end] minus [cutFrom..cutTo] along the axis of travel
+          const lo = horiz ? ax : ay;
+          const hi = horiz ? bx : by;
+          const drawRun = (s: number, e: number) => {
+            if (e - s < t) return;
+            ctx.beginPath();
+            if (horiz) {
+              ctx.moveTo(s, ay);
+              ctx.lineTo(e, ay);
+            } else {
+              ctx.moveTo(ax, s);
+              ctx.lineTo(ax, e);
+            }
+            ctx.stroke();
+          };
+          const c0 = Math.max(lo, cutFrom);
+          const c1 = Math.min(hi, cutTo);
+          if (c1 <= c0) {
+            drawRun(lo, hi); // no overlap — full side
+          } else {
+            drawRun(lo, c0);
+            drawRun(c1, hi);
+          }
+        };
+        // top & bottom sides gap where the zone's x-range overlaps
+        seg(m, m, W - m, m, gx0, gx1, true);
+        seg(m, H - m, W - m, H - m, gx0, gx1, true);
+        // left & right sides gap where the zone's y-range overlaps
+        seg(m, m, m, H - m, gy0, gy1, false);
+        seg(W - m, m, W - m, H - m, gy0, gy1, false);
+      }
+      break;
+    }
   }
   ctx.restore();
-}
-
-// Tiny deterministic PRNG (mulberry32) — seeded, so confetti placement is stable
-// across renders and identical between the on-screen preview and the export.
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 // Paint background + watermark + texture in order. Returns the resolved logo
@@ -608,6 +790,12 @@ async function paintCanvasLayers(
   design: DesignLayers,
   logoDataUrl: string | undefined,
   allowPhoto: boolean,
+  // When true, the texture pass is NOT run here — the caller paints it itself
+  // AFTER computing the content footprint, so hard-edged textures can avoid the
+  // logo/text (the content-awareness contract). The caller must invoke
+  // `paintTexture(...)` with the reserved zones. Ambient textures don't care,
+  // but the single deferred path keeps preview and export identical.
+  deferTexture = false,
 ): Promise<HTMLImageElement | null> {
   // Background
   if (bg.type === "solid") {
@@ -654,8 +842,11 @@ async function paintCanvasLayers(
     paintWatermark(ctx, logoImg, W, H, design.watermark);
   }
 
-  // Texture layer
-  paintTexture(ctx, design.texture, design.accentColor, W, H);
+  // Texture layer — skipped when deferred so the caller can paint it against the
+  // resolved content footprint (reserved zones).
+  if (!deferTexture) {
+    paintTexture(ctx, design.texture, design.accentColor, W, H);
+  }
 
   return logoImg;
 }
@@ -1035,6 +1226,8 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
 
   const padding = 80;
   const textColor = opts.textColor;
+  // Resolve the three text tiers (eyebrow/name/tagline) once, same as the banner.
+  const tiers = resolveTextTiers(textColor, opts.design.textColors);
   const eyebrow = opts.design.eyebrow?.trim();
   const eyebrowSize = 24;
   const eyebrowGap = 22;
@@ -1049,20 +1242,18 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
     }
     let yStart = logoImg ? padding + 88 + 52 : H / 2 - 110;
     if (eyebrow) {
-      drawEyebrow(ctx, eyebrow, W / 2, yStart, eyebrowSize, textColor, font.bodyFamily, "center");
+      drawEyebrow(ctx, eyebrow, W / 2, yStart, eyebrowSize, tiers.eyebrow, font.bodyFamily, "center");
       yStart += eyebrowSize + eyebrowGap;
     }
     const { size, lines } = fitHeadline(ctx, opts.headline || " ", maxW, 3, 96, 40, font.headingFamily, font.headingWeight);
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillStyle = textColor;
+    ctx.fillStyle = tiers.name;
     lines.forEach((ln, i) => ctx.fillText(ln, W / 2, yStart + i * size * 1.15));
     if (opts.subhead) {
       ctx.font = `${font.bodyWeight} 32px ${font.bodyFamily}`;
-      ctx.fillStyle = textColor;
-      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tiers.tagline;
       ctx.fillText(opts.subhead, W / 2, yStart + lines.length * size * 1.15 + 24);
-      ctx.globalAlpha = 1;
     }
   } else if (opts.layout === "logo-tl") {
     const maxW = W - padding * 2;
@@ -1078,16 +1269,15 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     if (eyebrow) {
-      drawEyebrow(ctx, eyebrow, padding, y, eyebrowSize, textColor, font.bodyFamily, "left");
+      drawEyebrow(ctx, eyebrow, padding, y, eyebrowSize, tiers.eyebrow, font.bodyFamily, "left");
       y += eyebrowSize + eyebrowGap;
     }
-    ctx.fillStyle = textColor;
+    ctx.fillStyle = tiers.name;
     lines.forEach((ln, i) => ctx.fillText(ln, padding, y + i * size * 1.15));
     if (opts.subhead) {
       ctx.font = `${font.bodyWeight} 30px ${font.bodyFamily}`;
-      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tiers.tagline;
       ctx.fillText(opts.subhead, padding, y + lines.length * size * 1.15 + 24);
-      ctx.globalAlpha = 1;
     }
   } else {
     // split: text left column, logo on the right. The name is the HERO and must
@@ -1108,18 +1298,17 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     if (eyebrow) {
-      drawEyebrow(ctx, eyebrow, padding, y, eyebrowSize, textColor, font.bodyFamily, "left");
+      drawEyebrow(ctx, eyebrow, padding, y, eyebrowSize, tiers.eyebrow, font.bodyFamily, "left");
       y += eyebrowSize + eyebrowGap;
     }
     ctx.font = `${font.headingWeight} ${size}px ${font.headingFamily}`;
-    ctx.fillStyle = textColor;
+    ctx.fillStyle = tiers.name;
     lines.forEach((ln, i) => ctx.fillText(ln, padding, y + i * nameLead));
     y += lines.length * nameLead;
     if (opts.subhead) {
       ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
-      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tiers.tagline;
       ctx.fillText(opts.subhead, padding, y + tagGap);
-      ctx.globalAlpha = 1;
     }
     if (logoImg) {
       const maxLogo = Math.min(330, H - padding * 2);
@@ -1212,6 +1401,8 @@ interface LeftBlockArgs {
   midY: number;
   font: FontPair;
   textColor: string;
+  /** Per-tier colors (eyebrow/name/tagline), already resolved with defaults. */
+  tiers: ResolvedTiers;
   accent: string;
   eyebrow: string;
   name: string;
@@ -1229,7 +1420,7 @@ interface LeftBlockArgs {
 }
 
 function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
-  const { font, textColor, accent } = a;
+  const { font, accent } = a;
   const maxW = a.x1 - a.x0;
   const hasEyebrow = Boolean(a.eyebrow);
   const hasName = Boolean(a.name);
@@ -1324,7 +1515,7 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
     y += logoDrawH + logoGap;
   }
   if (hasEyebrow) {
-    drawEyebrow(ctx, a.eyebrow, a.x0, y, eyebrowSize, textColor, font.bodyFamily, "left");
+    drawEyebrow(ctx, a.eyebrow, a.x0, y, eyebrowSize, a.tiers.eyebrow, font.bodyFamily, "left");
     y += eyebrowSize + eyebrowGap;
   }
   // Highlight lives in the NAME (big hero line) when it's a single line, else
@@ -1342,7 +1533,7 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
         nameSize,
         font.headingFamily,
         font.headingWeight,
-        textColor,
+        a.tiers.name,
         accent,
         accentReadableText(accent),
         a.highlightStyle,
@@ -1350,7 +1541,7 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
     } else {
       ctx.font = `${font.headingWeight} ${nameSize}px ${font.headingFamily}`;
       ctx.textAlign = "left";
-      ctx.fillStyle = textColor;
+      ctx.fillStyle = a.tiers.name;
       nameLines.forEach((ln, i) => ctx.fillText(ln, a.x0, y + i * nameSize * 1.08));
     }
     y += nameBlockH + gap;
@@ -1366,7 +1557,7 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
         tagSize,
         font.bodyFamily,
         font.bodyWeight,
-        textColor,
+        a.tiers.tagline,
         accent,
         accentReadableText(accent),
         a.highlightStyle,
@@ -1374,10 +1565,8 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
     } else {
       ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
       ctx.textAlign = "left";
-      ctx.fillStyle = textColor;
-      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = a.tiers.tagline;
       tagLines.forEach((ln, i) => ctx.fillText(ln, a.x0, y + i * tagSize * 1.18));
-      ctx.globalAlpha = 1;
     }
   }
 }
@@ -1394,13 +1583,18 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
   ctx.imageSmoothingQuality = "high";
 
   // Banners take solid/gradient only — a photo behind a thin strip reads badly.
-  // paintCanvasLayers with allowPhoto=false falls back to the accent solid.
-  const logoImg = await paintCanvasLayers(ctx, W, H, opts.background, opts.design, opts.logoDataUrl, false);
+  // paintCanvasLayers with allowPhoto=false falls back to the accent solid. We
+  // DEFER the texture pass: hard-edged accents must avoid the logo/text/photo,
+  // so we paint texture below only once the content footprint is known.
+  const logoImg = await paintCanvasLayers(ctx, W, H, opts.background, opts.design, opts.logoDataUrl, false, true);
 
   // Scale paddings/type off the (short) height so all three sizes look consistent.
   const pad = Math.round(H * 0.16);
   const textColor = opts.textColor;
   const accent = opts.design.accentColor;
+  // Resolve the three text tiers once (eyebrow/name/tagline). Unset tiers derive
+  // muted tones from the base textColor so the three read as a hierarchy.
+  const tiers = resolveTextTiers(textColor, opts.design.textColors);
 
   const hasName = Boolean(opts.name.trim());
   const hasTag = Boolean(opts.tagline.trim());
@@ -1413,29 +1607,6 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
   const logoH = Math.round(H * 0.42);
   const highlight = opts.highlightPhrase?.trim() || "";
 
-  // ---- Photo panel ----
-  // For the photo-panel layout, carve the photo into one side behind a shaped
-  // divider and constrain content to the solid zone it returns.
-  let photoZone: { textX0: number; textX1: number } | null = null;
-  if (opts.layout === "photo-panel" && opts.photo?.dataUrl) {
-    try {
-      const photoImg = await loadImage(opts.photo.dataUrl);
-      // The solid (text) zone already carries the background + texture from
-      // paintCanvasLayers; the photo is drawn over its own zone, so we do NOT
-      // re-apply texture (it would land on the person's face).
-      photoZone = paintPhotoPanel(ctx, photoImg, opts.photo, W, H, pad);
-    } catch {
-      photoZone = null;
-    }
-  }
-
-  // ---- Contact bar (independent add-on, any layout) ----
-  // Drawn first so we know how much bottom space it reserves, then content is
-  // biased to sit above it.
-  const contactH = opts.contactBar
-    ? drawContactBar(ctx, opts.contactBar, W, H, accent, textColor, font.bodyFamily)
-    : 0;
-
   // ---- Safe zone ----
   // All three platforms overlay a round profile avatar in the BOTTOM-LEFT of the
   // banner, plus each crops differently. The single biggest quality tell is
@@ -1443,15 +1614,122 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
   // the preview overlay in social-design.ts) is the horizontal fraction the
   // avatar+margin reserve; "left" content starts right of it and sits high.
   const avatarSafeX = Math.round(W * AVATAR_SAFE[opts.size.id]);
+
+  // The contact bar height is fixed geometry (H*0.16 when present), so we can
+  // reserve for it before drawing — needed for both the content band and the
+  // texture footprint.
+  const hasContactBar = Boolean(
+    opts.contactBar &&
+      (opts.contactBar.website?.trim() || opts.contactBar.phone?.trim() || opts.contactBar.cta?.trim()),
+  );
+  const contactH = hasContactBar ? Math.round(H * 0.16) : 0;
+
   // Vertical anchor: bias content upward so it clears the bottom avatar band AND
   // the contact bar (if present, center the content in the space above the bar).
   const safeMidY = contactH > 0 ? (H - contactH) * 0.46 : H * 0.42;
 
+  // The content column's left edge, per layout — used both to align the accent
+  // rule kicker and (for the reserved zone) to bound the content.
+  const centeredColW = W * 0.7;
+  const contentStartX =
+    opts.layout === "centered" ? (W - centeredColW) / 2 : Math.max(pad, avatarSafeX);
+
   // Vertical band the content stack must fit inside. Top = a small top padding;
   // bottom = above the contact bar (with a little breathing room). Every layout
   // scales its stack to fit this band so a tall logo+name+tagline never clips.
-  const bandTop = Math.round(H * 0.08);
+  //
+  // The accent-rule texture is a FIXED top-left kicker; rather than dodge the
+  // content, the CONTENT clears IT — so when it's active we drop the band top
+  // below the rule (rule height + inset + a little breathing gap). This is the
+  // "nudge the content, keep the rule where it reads" behavior.
+  let bandTop = Math.round(H * 0.08);
+  if (opts.design.texture === "accent-rule") {
+    const ruleRect = accentRuleRect(W, H, contentStartX);
+    const ruleBottom = ruleRect.y + ruleRect.h + Math.round(Math.min(W, H) * 0.06);
+    bandTop = Math.max(bandTop, ruleBottom);
+  }
   const bandBottom = H - contactH - Math.round(H * 0.06);
+
+  // ---- Photo panel geometry ----
+  // Compute the photo zone (and its reserved box) from geometry BEFORE painting,
+  // so the texture footprint can avoid the photo. The photo itself is drawn
+  // later, on top of the texture, exactly as before.
+  const photoFrac = 0.42;
+  const photoSkew = W * 0.05;
+  let photoZone: { textX0: number; textX1: number } | null = null;
+  let photoImg: HTMLImageElement | null = null;
+  let photoBox: Rect | null = null;
+  if (opts.layout === "photo-panel" && opts.photo?.dataUrl) {
+    try {
+      photoImg = await loadImage(opts.photo.dataUrl);
+    } catch {
+      photoImg = null;
+    }
+    if (photoImg) {
+      const seam = opts.photo.side === "left" ? W * photoFrac : W * (1 - photoFrac);
+      // A conservative full-height strip covering the photo side out to the seam.
+      if (opts.photo.side === "left") {
+        photoBox = { x: 0, y: 0, w: seam + photoSkew, h: H };
+      } else {
+        photoBox = { x: seam - photoSkew, y: 0, w: W - (seam - photoSkew), h: H };
+      }
+    }
+  }
+
+  // For photo-panel, the content's text zone depends on the seam math — compute
+  // it now (cheap, mirrors paintPhotoPanel's return) so the reserved content
+  // column below uses the right x-range. The photo itself is drawn later.
+  if (opts.layout === "photo-panel" && photoImg && opts.photo) {
+    const seam = opts.photo.side === "left" ? W * photoFrac : W * (1 - photoFrac);
+    const contentPad = Math.round(pad * 0.5);
+    const seamClear = photoSkew * 0.5;
+    photoZone =
+      opts.photo.side === "left"
+        ? { textX0: seam + seamClear + contentPad, textX1: W - contentPad }
+        : { textX0: contentPad, textX1: seam - seamClear - contentPad };
+  }
+
+  // ---- Content footprint (reserved zone for the texture pass) ----
+  // The union of the regions the texture must not slice: the content column,
+  // the bottom-left avatar, the contact bar, and the photo panel. Hard-edged
+  // textures anchor into the free space around this; ambient ones ignore it.
+  // Boxes are coarse (region-level) — a margin in the texture math absorbs slack.
+  const reserved: Rect[] = [];
+  // Content column: where the logo/name/tagline stack lives, per layout.
+  if (opts.layout === "centered") {
+    reserved.push({ x: contentStartX, y: bandTop, w: centeredColW, h: bandBottom - bandTop });
+  } else if (opts.layout === "photo-panel") {
+    const zoneX0 = photoZone?.textX0 ?? contentStartX;
+    const zoneX1 = photoZone?.textX1 ?? W - pad;
+    reserved.push({ x: zoneX0, y: bandTop, w: Math.max(0, zoneX1 - zoneX0), h: bandBottom - bandTop });
+  } else {
+    // left + highlight: a column from the avatar-safe start to the right pad.
+    reserved.push({ x: contentStartX, y: bandTop, w: Math.max(0, W - pad - contentStartX), h: bandBottom - bandTop });
+  }
+  // Bottom-left avatar reservation (present on every layout).
+  const avatarBoxH = Math.round(H * 0.42);
+  reserved.push({ x: 0, y: H - contactH - avatarBoxH, w: avatarSafeX, h: avatarBoxH });
+  // Contact bar reservation.
+  if (contactH > 0) reserved.push({ x: 0, y: H - contactH, w: W, h: contactH });
+  // Photo panel reservation.
+  if (photoBox) reserved.push(photoBox);
+
+  // ---- Texture (deferred, content-aware) ----
+  // Painted here — under the photo, contact bar, and text, but AFTER the content
+  // footprint is known — so hard-edged accents avoid the brand. contentStartX
+  // aligns the accent-rule kicker with the content column it introduces.
+  paintTexture(ctx, opts.design.texture, accent, W, H, reserved, contentStartX);
+
+  // ---- Photo panel (drawn on top of the texture, as before) ----
+  if (opts.layout === "photo-panel" && photoImg && opts.photo) {
+    photoZone = paintPhotoPanel(ctx, photoImg, opts.photo, W, H, pad);
+  }
+
+  // ---- Contact bar (independent add-on, any layout) ----
+  const drawnContactH = opts.contactBar
+    ? drawContactBar(ctx, opts.contactBar, W, H, accent, textColor, font.bodyFamily)
+    : 0;
+  void drawnContactH; // height already reserved above as contactH
 
   ctx.fillStyle = textColor;
 
@@ -1466,6 +1744,7 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       midY: safeMidY,
       font,
       textColor,
+      tiers,
       accent,
       eyebrow: hasEyebrow ? eyebrow! : "",
       name: opts.name.trim(),
@@ -1491,6 +1770,7 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       midY: safeMidY,
       font,
       textColor,
+      tiers,
       accent,
       eyebrow: hasEyebrow ? eyebrow! : "",
       name: opts.name.trim(),
@@ -1548,23 +1828,21 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       cursorY += cLogoH + gap;
     }
     if (hasEyebrow) {
-      drawEyebrow(ctx, eyebrow!, W / 2, cursorY, cEyebrowSize, textColor, font.bodyFamily, "center");
+      drawEyebrow(ctx, eyebrow!, W / 2, cursorY, cEyebrowSize, tiers.eyebrow, font.bodyFamily, "center");
       cursorY += cEyebrowSize + eyebrowGap;
     }
     if (hasName) {
       ctx.font = `${font.headingWeight} ${nameSize}px ${font.headingFamily}`;
       ctx.textAlign = "center";
-      ctx.fillStyle = textColor;
+      ctx.fillStyle = tiers.name;
       ctx.fillText(nameLines[0] ?? opts.name.trim(), W / 2, cursorY);
       cursorY += nameSize + gap;
     }
     if (hasTag) {
       ctx.font = `${font.bodyWeight} ${cTagSize}px ${font.bodyFamily}`;
       ctx.textAlign = "center";
-      ctx.fillStyle = textColor;
-      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tiers.tagline;
       ctx.fillText(opts.tagline.trim(), W / 2, cursorY);
-      ctx.globalAlpha = 1;
     }
   } else {
     // Left layout: logo + name + tagline, left-aligned, but starting to the RIGHT
@@ -1608,23 +1886,21 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       (hasTag ? tagSize : 0);
     let y = safeMidY - blockH / 2;
     if (hasEyebrow) {
-      drawEyebrow(ctx, eyebrow!, x, y, eyebrowSize, textColor, font.bodyFamily, "left");
+      drawEyebrow(ctx, eyebrow!, x, y, eyebrowSize, tiers.eyebrow, font.bodyFamily, "left");
       y += eyebrowSize + eyebrowGap;
     }
     if (hasName) {
       ctx.font = `${font.headingWeight} ${nameSize}px ${font.headingFamily}`;
       ctx.textAlign = "left";
-      ctx.fillStyle = textColor;
+      ctx.fillStyle = tiers.name;
       ctx.fillText(nameLines[0] ?? opts.name.trim(), x, y);
       y += nameSize + gap;
     }
     if (hasTag) {
       ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
       ctx.textAlign = "left";
-      ctx.fillStyle = textColor;
-      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tiers.tagline;
       ctx.fillText(opts.tagline.trim(), x, y);
-      ctx.globalAlpha = 1;
     }
   }
 

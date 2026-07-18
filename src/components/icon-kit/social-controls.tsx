@@ -18,6 +18,7 @@ import {
   type HighlightStyle,
   contrastRatio,
   CONTRAST_MIN,
+  autoTierColor,
 } from "../../lib/icon-kit/social-design";
 
 const { Text } = Typography;
@@ -37,6 +38,43 @@ export function FontPicker({ value, onChange }: { value: string; onChange: (id: 
         ),
       }))}
     />
+  );
+}
+
+// A single text-tier color control (eyebrow / tagline). "Auto" means derive a
+// muted tone from the base text color; the swatch previews that derived tone so
+// the user sees what auto looks like. Picking a color sets an explicit override;
+// the Auto link clears it. Keeps the three-tier color UI DRY — one component,
+// used per tier, instead of pasting a ColorPicker + reset per row.
+export function TierColorControl({
+  label,
+  tier,
+  value,
+  baseTextColor,
+  onChange,
+}: {
+  label: string;
+  tier: "eyebrow" | "tagline";
+  value: string; // "" = auto
+  baseTextColor: string;
+  onChange: (hex: string) => void;
+}) {
+  const isAuto = !value;
+  const effective = value || autoTierColor(tier, baseTextColor);
+  return (
+    <Space size={8}>
+      <span style={{ minWidth: 62, display: "inline-block" }}>{label}</span>
+      <ColorPicker value={effective} onChange={(c) => onChange(c.toHexString())} />
+      {isAuto ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Auto (muted)
+        </Text>
+      ) : (
+        <Button size="small" type="link" style={{ padding: 0 }} onClick={() => onChange("")}>
+          Reset to auto
+        </Button>
+      )}
+    </Space>
   );
 }
 

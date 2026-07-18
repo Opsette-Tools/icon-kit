@@ -33,6 +33,7 @@ import {
   DEFAULT_FONT_ID,
   getFontPair,
   loadFontPair,
+  migrateTextureKind,
   mixHex,
   type HighlightStyle,
   type TextureKind,
@@ -49,6 +50,7 @@ import {
   FontPicker,
   PhotoPanelControls,
   TexturePicker,
+  TierColorControl,
   WatermarkControls,
   WordHighlightPicker,
 } from "./social-controls";
@@ -120,6 +122,11 @@ export interface SocialState {
   duoShadow: string;
   duoHighlight: string;
   textColor: string;
+  // Per-tier text color overrides. Empty string = "auto" (derive a muted tone
+  // from textColor). The brand name always uses textColor; eyebrow + tagline
+  // default to muted derivations unless overridden here.
+  eyebrowColor: string;
+  taglineColor: string;
   // Design layers.
   accentColor: string;
   texture: TextureKind;
@@ -177,8 +184,10 @@ export const socialInitial: State = {
   duoShadow: "#1c332c",
   duoHighlight: "#e8f2ec",
   textColor: "#ffffff",
+  eyebrowColor: "", // auto — derives a muted tone from textColor
+  taglineColor: "", // auto — derives a muted tone from textColor
   accentColor: "#a7d7c2",
-  texture: "corner-blob",
+  texture: "corner-glow",
   watermark: false,
   watermarkEdge: "right",
   watermarkOpacity: 0.1,
@@ -211,6 +220,8 @@ const SECTION_KEYS: Record<string, (keyof State)[]> = {
     "subhead",
     "fontId",
     "textColor",
+    "eyebrowColor",
+    "taglineColor",
     "highlightPhrase",
     "highlightStyle",
   ],
@@ -260,8 +271,14 @@ type Action =
 
 function reducer(s: State, a: Action): State {
   switch (a.type) {
-    case "patch":
-      return { ...s, ...a.patch };
+    case "patch": {
+      const next = { ...s, ...a.patch };
+      // Normalize any legacy texture id (renamed/retired in the content-aware
+      // refactor) so a hydrated or reopened design lands on a real texture, not
+      // a blank Select. No-op for current ids.
+      if ("texture" in a.patch) next.texture = migrateTextureKind(a.patch.texture as string);
+      return next;
+    }
     case "reset":
       // Full reset — every field back to the shipped defaults.
       return { ...socialInitial };
@@ -291,7 +308,16 @@ function buildDesign(s: State): DesignLayers {
     fontId: s.fontId,
     eyebrow: s.eyebrow,
     accentColor: s.accentColor,
-    texture: s.texture,
+    // Only pass tier overrides that are actually set; empty = auto (the renderer
+    // derives a muted tone from textColor). The name always uses textColor.
+    textColors:
+      s.eyebrowColor || s.taglineColor
+        ? {
+            eyebrow: s.eyebrowColor || undefined,
+            tagline: s.taglineColor || undefined,
+          }
+        : undefined,
+    texture: migrateTextureKind(s.texture),
     watermark:
       s.watermark && s.logoDataUrl
         ? {
@@ -810,12 +836,33 @@ export function SocialPanel() {
             </div>
           </div>
           <Space>
-            <span>Text color</span>
+            <span style={{ minWidth: 62, display: "inline-block" }}>Brand name</span>
             <ColorPicker
               value={state.textColor}
               onChange={(c) => dispatch({ type: "patch", patch: { textColor: c.toHexString() } })}
             />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              The hero color
+            </Typography.Text>
           </Space>
+          <TierColorControl
+            label="Eyebrow"
+            tier="eyebrow"
+            value={state.eyebrowColor}
+            baseTextColor={state.textColor}
+            onChange={(hex) => dispatch({ type: "patch", patch: { eyebrowColor: hex } })}
+          />
+          <TierColorControl
+            label="Tagline"
+            tier="tagline"
+            value={state.taglineColor}
+            baseTextColor={state.textColor}
+            onChange={(hex) => dispatch({ type: "patch", patch: { taglineColor: hex } })}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Eyebrow and tagline default to muted tones of the brand-name color so
+            the three read as a hierarchy. Set your own, or leave on Auto.
+          </Typography.Text>
           <ContrastShield
             textColor={state.textColor}
             bgColor={dominantBg(state)}
@@ -962,7 +1009,7 @@ export function SocialPanel() {
             </Typography.Text>
             <div style={{ marginTop: 4 }}>
               <TexturePicker
-                value={state.texture}
+                value={migrateTextureKind(state.texture)}
                 onChange={(t) => dispatch({ type: "patch", patch: { texture: t } })}
               />
             </div>

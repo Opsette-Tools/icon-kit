@@ -156,6 +156,19 @@ export default function App() {
           fontFamily: '"Inter", system-ui, sans-serif',
           borderRadius: 10,
         },
+        components: {
+          // AntD derives the Select's selected/hover row background from
+          // colorPrimary. With our dark-green primary that lands as a heavy,
+          // muddy grey-green on the open dropdown. Override with a LIGHT tertiary
+          // tint of the brand so the highlighted option reads as a soft wash, not
+          // a dark block. (Known AntD gotcha — the default is far too dark for a
+          // dark primary.)
+          Select: {
+            optionSelectedBg: "#e8f2ec", // selected row — pale brand tint
+            optionSelectedColor: "#1c332c", // keep text legible on the pale tint
+            controlItemBgHover: "#f0f6f3", // hover row — even lighter
+          },
+        },
       }}
     >
       <AntdApp>
