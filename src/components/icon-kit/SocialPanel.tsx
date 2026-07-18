@@ -7,6 +7,7 @@ import {
   ColorPicker,
   Input,
   Modal,
+  Popconfirm,
   Radio,
   Slider,
   Space,
@@ -15,7 +16,7 @@ import {
   Upload,
 } from "antd";
 import type { UploadProps } from "antd";
-import { DownloadOutlined, InboxOutlined, FolderOpenOutlined } from "@ant-design/icons";
+import { DownloadOutlined, InboxOutlined, FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
 
 import {
   BANNER_SIZES,
@@ -52,6 +53,7 @@ import {
   WordHighlightPicker,
 } from "./social-controls";
 import { SafeZoneOverlay } from "./SafeZoneOverlay";
+import { SectionCard } from "./SectionCard";
 
 type BgKind = "solid" | "gradient" | "image";
 
@@ -198,8 +200,61 @@ export const socialInitial: State = {
   showSafeZone: true,
 };
 
+// Which state keys each numbered section owns. A per-section reset patches just
+// these back to their default (socialInitial), leaving the rest of the design
+// alone. Keeping it declarative means a new control only has to be added to its
+// section's list once — no bespoke reset handler per card.
+const SECTION_KEYS: Record<string, (keyof State)[]> = {
+  brand: [
+    "headline",
+    "eyebrow",
+    "subhead",
+    "fontId",
+    "textColor",
+    "highlightPhrase",
+    "highlightStyle",
+  ],
+  logo: ["logoDataUrl", "watermark", "watermarkEdge", "watermarkOpacity", "watermarkScale"],
+  background: [
+    "bgKind",
+    "solidColor",
+    "gradFrom",
+    "gradTo",
+    "gradAngle",
+    "bgImage",
+    "overlay",
+    "duotone",
+    "duoShadow",
+    "duoHighlight",
+  ],
+  texture: ["texture", "accentColor"],
+  extras: [
+    "panelPhoto",
+    "photoSide",
+    "photoDivider",
+    "photoZoom",
+    "photoFocusX",
+    "photoFocusY",
+    "contactBar",
+    "contactWebsite",
+    "contactPhone",
+    "contactCta",
+  ],
+};
+
+// Build the reset patch for one section — its keys pulled back to defaults.
+function sectionResetPatch(section: keyof typeof SECTION_KEYS): Partial<State> {
+  const patch: Partial<State> = {};
+  for (const key of SECTION_KEYS[section]) {
+    // Widen through unknown so a mixed-key patch object typechecks cleanly.
+    (patch as Record<string, unknown>)[key] = socialInitial[key];
+  }
+  return patch;
+}
+
 type Action =
   | { type: "patch"; patch: Partial<State> }
+  | { type: "reset" }
   | { type: "setLayout"; id: OutputId; layout: AnyLayout }
   | { type: "toggle"; id: OutputId; on: boolean };
 
@@ -207,6 +262,9 @@ function reducer(s: State, a: Action): State {
   switch (a.type) {
     case "patch":
       return { ...s, ...a.patch };
+    case "reset":
+      // Full reset — every field back to the shipped defaults.
+      return { ...socialInitial };
     case "setLayout":
       return { ...s, layouts: { ...s.layouts, [a.id]: a.layout } };
     case "toggle":
@@ -540,6 +598,12 @@ export function SocialPanel() {
     },
   };
 
+  // Reset one section's controls back to defaults (leaves the rest untouched).
+  function resetSection(section: keyof typeof SECTION_KEYS, label: string) {
+    dispatch({ type: "patch", patch: sectionResetPatch(section) });
+    message.success(`${label} reset`);
+  }
+
   async function downloadOne(out: OutputDef) {
     try {
       const c = await renderOutput(out, state);
@@ -637,9 +701,26 @@ export function SocialPanel() {
           Design once — every size renders on the right. Check the ones you want,
           then download them or export the set to Brand Board.
         </Typography.Paragraph>
-        <Button icon={<FolderOpenOutlined />} onClick={() => setReopenOpen(true)}>
-          Reopen a saved design
-        </Button>
+        <Space wrap>
+          <Popconfirm
+            title="Reset the whole design?"
+            description="Clears every section — brand, logo, background, texture and extras — back to defaults. This can't be undone."
+            okText="Reset everything"
+            okButtonProps={{ danger: true }}
+            cancelText="Keep it"
+            onConfirm={() => {
+              dispatch({ type: "reset" });
+              message.success("Everything reset to defaults");
+            }}
+          >
+            <Button danger icon={<ReloadOutlined />}>
+              Reset
+            </Button>
+          </Popconfirm>
+          <Button icon={<FolderOpenOutlined />} onClick={() => setReopenOpen(true)}>
+            Reopen
+          </Button>
+        </Space>
       </div>
 
       <Modal
@@ -677,7 +758,12 @@ export function SocialPanel() {
           a single stacked column on mobile via .social-split (see styles.css). */}
       <div className="social-split">
         <Space direction="vertical" size={16} style={{ width: "100%" }} className="social-controls-col">
-          <Card size="small" title="1. Brand name & type">
+          <SectionCard
+            title="1. Brand name & type"
+            collapsible
+            onReset={() => resetSection("brand", "Brand name & type")}
+            resetTip="Reset brand name & type"
+          >
         <Space direction="vertical" style={{ width: "100%" }} size={10}>
           <Input
             placeholder="Eyebrow — role or location (optional)"
@@ -736,9 +822,14 @@ export function SocialPanel() {
             onFix={(color) => dispatch({ type: "patch", patch: { textColor: color } })}
           />
         </Space>
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="2. Logo (optional)">
+      <SectionCard
+        title="2. Logo (optional)"
+        collapsible
+        onReset={() => resetSection("logo", "Logo")}
+        resetTip="Reset logo & watermark"
+      >
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <Space>
             <Upload {...logoUpload}>
@@ -767,9 +858,14 @@ export function SocialPanel() {
             onScale={(v) => dispatch({ type: "patch", patch: { watermarkScale: v } })}
           />
         </Space>
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="3. Background">
+      <SectionCard
+        title="3. Background"
+        collapsible
+        onReset={() => resetSection("background", "Background")}
+        resetTip="Reset background"
+      >
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <Radio.Group
             value={state.bgKind}
@@ -851,9 +947,14 @@ export function SocialPanel() {
             </Space>
           )}
         </Space>
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="4. Texture & accent">
+      <SectionCard
+        title="4. Texture & accent"
+        collapsible
+        onReset={() => resetSection("texture", "Texture & accent")}
+        resetTip="Reset texture & accent"
+      >
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -877,9 +978,14 @@ export function SocialPanel() {
             </Typography.Text>
           </Space>
         </Space>
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="5. Photo panel & contact bar">
+      <SectionCard
+        title="5. Photo panel & contact bar"
+        collapsible
+        onReset={() => resetSection("extras", "Photo panel & contact bar")}
+        resetTip="Reset photo panel & contact bar"
+      >
         <Space direction="vertical" style={{ width: "100%" }} size={16}>
           <div>
             <Typography.Text strong style={{ fontSize: 13 }}>
@@ -920,14 +1026,14 @@ export function SocialPanel() {
             </div>
           </div>
         </Space>
-      </Card>
+      </SectionCard>
         </Space>
 
         <div className="social-preview-col">
           <Space direction="vertical" size={16} style={{ width: "100%" }} className="social-preview-inner">
-      <Card
-        size="small"
+      <SectionCard
         title="6. Previews"
+        primary
         extra={
           <Space size={12}>
             <Space size={4}>
@@ -977,7 +1083,7 @@ export function SocialPanel() {
             />
           ))}
         </Space>
-      </Card>
+      </SectionCard>
 
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
         <ExportToBoardButton scope="social" liveState={state} disabled={!someSelected} block />

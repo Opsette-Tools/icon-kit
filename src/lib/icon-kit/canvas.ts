@@ -1090,11 +1090,20 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
       ctx.globalAlpha = 1;
     }
   } else {
-    // split: text left half, logo big right half
-    const colW = W / 2 - padding * 1.5;
-    const { size, lines } = fitHeadline(ctx, opts.headline || " ", colW, 4, 80, 32, font.headingFamily, font.headingWeight);
+    // split: text left column, logo on the right. The name is the HERO and must
+    // dominate — cap it to 2 lines and let it run LARGE (up to ~112px) with a
+    // high floor, so the eyebrow (small caps) and tagline read as clearly
+    // subordinate. Line-height is tight (1.04) so a two-line name reads as one
+    // strong block, not two loose rows. This is what fixes the "nothing stands
+    // out" flatness on the split card.
+    const colW = W * 0.54 - padding;
+    const { size, lines } = fitHeadline(ctx, opts.headline || " ", colW, 2, 112, 56, font.headingFamily, font.headingWeight);
+    const nameLead = size * 1.04;
     const eyebrowH = eyebrow ? eyebrowSize + eyebrowGap : 0;
-    const totalH = eyebrowH + lines.length * size * 1.15 + (opts.subhead ? 60 : 0);
+    const tagGap = 28;
+    const tagSize = 30;
+    const totalH =
+      eyebrowH + lines.length * nameLead + (opts.subhead ? tagGap + tagSize : 0);
     let y = (H - totalH) / 2;
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
@@ -1102,20 +1111,22 @@ export async function renderSocial(opts: SocialOpts): Promise<HTMLCanvasElement>
       drawEyebrow(ctx, eyebrow, padding, y, eyebrowSize, textColor, font.bodyFamily, "left");
       y += eyebrowSize + eyebrowGap;
     }
+    ctx.font = `${font.headingWeight} ${size}px ${font.headingFamily}`;
     ctx.fillStyle = textColor;
-    lines.forEach((ln, i) => ctx.fillText(ln, padding, y + i * size * 1.15));
+    lines.forEach((ln, i) => ctx.fillText(ln, padding, y + i * nameLead));
+    y += lines.length * nameLead;
     if (opts.subhead) {
-      ctx.font = `${font.bodyWeight} 28px ${font.bodyFamily}`;
+      ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
       ctx.globalAlpha = 0.85;
-      ctx.fillText(opts.subhead, padding, y + lines.length * size * 1.15 + 24);
+      ctx.fillText(opts.subhead, padding, y + tagGap);
       ctx.globalAlpha = 1;
     }
     if (logoImg) {
-      const maxLogo = Math.min(360, H - padding * 2);
+      const maxLogo = Math.min(330, H - padding * 2);
       const ratio = Math.min(maxLogo / logoImg.width, maxLogo / logoImg.height);
       const lw = logoImg.width * ratio;
       const lh = logoImg.height * ratio;
-      ctx.drawImage(logoImg, W * 0.75 - lw / 2, H / 2 - lh / 2, lw, lh);
+      ctx.drawImage(logoImg, W * 0.78 - lw / 2, H / 2 - lh / 2, lw, lh);
     }
   }
 
@@ -1211,6 +1222,10 @@ interface LeftBlockArgs {
   H: number;
   logoImg: HTMLImageElement | null;
   logoH: number;
+  /** Top edge the stack must not cross (top padding). Defaults to H*0.08. */
+  topLimit?: number;
+  /** Bottom edge the stack must not cross (above avatar/contact bar). Defaults to H. */
+  bottomLimit?: number;
 }
 
 function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
@@ -1220,9 +1235,9 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
   const hasName = Boolean(a.name);
   const hasTag = Boolean(a.tagline);
   const showLogo = a.logoImg != null;
-  const logoGap = Math.round(a.H * 0.05);
-  const gap = Math.round(a.H * 0.045);
-  const eyebrowGap = Math.round(a.H * 0.03);
+  let logoGap = Math.round(a.H * 0.05);
+  let gap = Math.round(a.H * 0.045);
+  let eyebrowGap = Math.round(a.H * 0.03);
 
   let nameSize = 0;
   let nameLines: string[] = [];
@@ -1231,8 +1246,12 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
     nameSize = fit.size;
     nameLines = fit.lines;
   }
-  const nameBlockH = nameLines.length * nameSize * 1.08;
-  const logoDrawH = showLogo ? a.logoH * 0.7 : 0;
+  let nameBlockH = nameLines.length * nameSize * 1.08;
+  let logoDrawH = showLogo ? a.logoH * 0.7 : 0;
+  // Mutable copies of the type sizes so the fit-to-band pass below can shrink
+  // the whole stack uniformly when it's taller than the space it has.
+  let eyebrowSize = a.sizes.eyebrowSize;
+  let tagSize = a.sizes.tagSize;
 
   // Wrap the tagline to up to 2 lines within the zone so a long tagline on a
   // narrow layout (Facebook photo panel) reflows instead of running off the
@@ -1253,19 +1272,48 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
   if (hasTag && !tagHasHl) {
     // Only wrap the plain tagline; a highlighted tagline stays one line so the
     // marker/emphasis math (single-line) holds.
-    ctx.font = `${font.bodyWeight} ${a.sizes.tagSize}px ${font.bodyFamily}`;
+    ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
     tagLines = wrapLines(ctx, a.tagline, maxW, 2);
     if (tagLines.length === 0) tagLines = [a.tagline];
   }
-  const tagBlockH = tagLines.length * a.sizes.tagSize * 1.18;
+  let tagBlockH = tagLines.length * tagSize * 1.18;
 
-  const blockH =
+  const stackH = () =>
     (showLogo ? logoDrawH + logoGap : 0) +
-    (hasEyebrow ? a.sizes.eyebrowSize + eyebrowGap : 0) +
+    (hasEyebrow ? eyebrowSize + eyebrowGap : 0) +
     (hasName ? nameBlockH : 0) +
     (hasName && hasTag ? gap : 0) +
     (hasTag ? tagBlockH : 0);
+
+  // ── Fit the whole stack to the band ────────────────────────────────────────
+  // The block is vertically centered at midY. If it's taller than the space it
+  // has (top padding → bottom limit), scale EVERYTHING down together — logo,
+  // type and gaps — so a long name with a logo + tagline never pushes the logo
+  // off the top or the tagline into the avatar. This is the fix for the banners
+  // clipping the logo when the content is tall.
+  const topLimit = a.topLimit ?? Math.round(a.H * 0.08);
+  const bottomLimit = a.bottomLimit ?? a.H;
+  const avail = bottomLimit - topLimit;
+  const scale = stackH() > avail ? avail / stackH() : 1;
+  if (scale < 1) {
+    logoDrawH *= scale;
+    nameSize *= scale;
+    nameBlockH *= scale;
+    tagSize *= scale;
+    tagBlockH *= scale;
+    eyebrowSize *= scale;
+    logoGap = Math.round(logoGap * scale);
+    gap = Math.round(gap * scale);
+    eyebrowGap = Math.round(eyebrowGap * scale);
+  }
+
+  const blockH = stackH();
+  // Center at midY, then clamp so the top never crosses topLimit and the bottom
+  // never crosses bottomLimit (with the block now guaranteed to fit, one clamp
+  // resolves both).
   let y = a.midY - blockH / 2;
+  if (y < topLimit) y = topLimit;
+  if (y + blockH > bottomLimit) y = bottomLimit - blockH;
 
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
@@ -1276,8 +1324,8 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
     y += logoDrawH + logoGap;
   }
   if (hasEyebrow) {
-    drawEyebrow(ctx, a.eyebrow, a.x0, y, a.sizes.eyebrowSize, textColor, font.bodyFamily, "left");
-    y += a.sizes.eyebrowSize + eyebrowGap;
+    drawEyebrow(ctx, a.eyebrow, a.x0, y, eyebrowSize, textColor, font.bodyFamily, "left");
+    y += eyebrowSize + eyebrowGap;
   }
   // Highlight lives in the NAME (big hero line) when it's a single line, else
   // the tagline. Computed above so tagline wrapping can skip a highlighted
@@ -1315,7 +1363,7 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
         a.highlight,
         a.x0,
         y,
-        a.sizes.tagSize,
+        tagSize,
         font.bodyFamily,
         font.bodyWeight,
         textColor,
@@ -1324,11 +1372,11 @@ function drawLeftContentBlock(ctx: CanvasRenderingContext2D, a: LeftBlockArgs) {
         a.highlightStyle,
       );
     } else {
-      ctx.font = `${font.bodyWeight} ${a.sizes.tagSize}px ${font.bodyFamily}`;
+      ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
       ctx.textAlign = "left";
       ctx.fillStyle = textColor;
       ctx.globalAlpha = 0.9;
-      tagLines.forEach((ln, i) => ctx.fillText(ln, a.x0, y + i * a.sizes.tagSize * 1.18));
+      tagLines.forEach((ln, i) => ctx.fillText(ln, a.x0, y + i * tagSize * 1.18));
       ctx.globalAlpha = 1;
     }
   }
@@ -1399,6 +1447,12 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
   // the contact bar (if present, center the content in the space above the bar).
   const safeMidY = contactH > 0 ? (H - contactH) * 0.46 : H * 0.42;
 
+  // Vertical band the content stack must fit inside. Top = a small top padding;
+  // bottom = above the contact bar (with a little breathing room). Every layout
+  // scales its stack to fit this band so a tall logo+name+tagline never clips.
+  const bandTop = Math.round(H * 0.08);
+  const bandBottom = H - contactH - Math.round(H * 0.06);
+
   ctx.fillStyle = textColor;
 
   if (opts.layout === "photo-panel") {
@@ -1422,6 +1476,8 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       H,
       logoImg,
       logoH,
+      topLimit: bandTop,
+      bottomLimit: bandBottom,
     });
   } else if (opts.layout === "highlight") {
     // Text-forward: eyebrow → name → highlighted tagline, left-aligned in the
@@ -1445,38 +1501,55 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       H,
       logoImg,
       logoH,
+      topLimit: bandTop,
+      bottomLimit: bandBottom,
     });
   } else if (opts.layout === "centered") {
     // Centered horizontally (avatar hugs the far-left edge, so true-center text
     // clears it) but biased UP so it sits above the bottom-left avatar band.
     const maxW = W * 0.7;
-    const eyebrowGap = Math.round(H * 0.035);
-    const blocks: number[] = [];
-    if (logoImg) blocks.push(logoH);
-    if (hasEyebrow) blocks.push(eyebrowSize + eyebrowGap);
+    let eyebrowGap = Math.round(H * 0.035);
+    let cEyebrowSize = eyebrowSize;
+    let cTagSize = tagSize;
+    let cLogoH = logoH;
     let nameSize = 0;
     let nameLines: string[] = [];
     if (hasName) {
       const fit = fitHeadline(ctx, opts.name.trim(), maxW, 1, nameMax, nameMin, font.headingFamily, font.headingWeight);
       nameSize = fit.size;
       nameLines = fit.lines;
-      blocks.push(nameSize);
     }
-    if (hasTag) blocks.push(tagSize);
-    const gap = Math.round(H * 0.06);
-    const totalH = blocks.reduce((s, b) => s + b, 0) + gap * Math.max(0, blocks.length - 1);
+    let gap = Math.round(H * 0.06);
+    const centeredStackH = () =>
+      (logoImg ? cLogoH + gap : 0) +
+      (hasEyebrow ? cEyebrowSize + eyebrowGap : 0) +
+      (hasName ? nameSize + (hasTag ? gap : 0) : 0) +
+      (hasTag ? cTagSize : 0);
+    // Fit the stack to the band (same idea as the left block).
+    const cScale = centeredStackH() > bandBottom - bandTop ? (bandBottom - bandTop) / centeredStackH() : 1;
+    if (cScale < 1) {
+      cLogoH *= cScale;
+      cEyebrowSize *= cScale;
+      cTagSize *= cScale;
+      nameSize *= cScale;
+      gap = Math.round(gap * cScale);
+      eyebrowGap = Math.round(eyebrowGap * cScale);
+    }
+    const totalH = centeredStackH();
     let cursorY = safeMidY - totalH / 2;
+    if (cursorY < bandTop) cursorY = bandTop;
+    if (cursorY + totalH > bandBottom) cursorY = bandBottom - totalH;
 
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     if (logoImg) {
-      const lw = (logoImg.width / logoImg.height) * logoH;
-      ctx.drawImage(logoImg, W / 2 - lw / 2, cursorY, lw, logoH);
-      cursorY += logoH + gap;
+      const lw = (logoImg.width / logoImg.height) * cLogoH;
+      ctx.drawImage(logoImg, W / 2 - lw / 2, cursorY, lw, cLogoH);
+      cursorY += cLogoH + gap;
     }
     if (hasEyebrow) {
-      drawEyebrow(ctx, eyebrow!, W / 2, cursorY, eyebrowSize, textColor, font.bodyFamily, "center");
-      cursorY += eyebrowSize + eyebrowGap;
+      drawEyebrow(ctx, eyebrow!, W / 2, cursorY, cEyebrowSize, textColor, font.bodyFamily, "center");
+      cursorY += cEyebrowSize + eyebrowGap;
     }
     if (hasName) {
       ctx.font = `${font.headingWeight} ${nameSize}px ${font.headingFamily}`;
@@ -1486,7 +1559,7 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
       cursorY += nameSize + gap;
     }
     if (hasTag) {
-      ctx.font = `${font.bodyWeight} ${tagSize}px ${font.bodyFamily}`;
+      ctx.font = `${font.bodyWeight} ${cTagSize}px ${font.bodyFamily}`;
       ctx.textAlign = "center";
       ctx.fillStyle = textColor;
       ctx.globalAlpha = 0.85;
@@ -1503,9 +1576,19 @@ export async function renderBanner(opts: BannerOpts): Promise<HTMLCanvasElement>
     const maxW = W - startX - pad;
     let x = startX;
 
+    // Logo sits beside the text, vertically centered. Cap its height to the band
+    // so it never bleeds past the top/bottom, and cap its WIDTH to a third of the
+    // usable row so a wide logo can't crowd the name off the right edge.
     if (logoImg) {
-      const lw = (logoImg.width / logoImg.height) * logoH;
-      ctx.drawImage(logoImg, x, safeMidY - logoH / 2, lw, logoH);
+      let leftLogoH = Math.min(logoH, bandBottom - bandTop);
+      const logoAspect = logoImg.width / logoImg.height;
+      const maxLogoW = maxW * 0.34;
+      if (leftLogoH * logoAspect > maxLogoW) leftLogoH = maxLogoW / logoAspect;
+      const lw = logoAspect * leftLogoH;
+      let logoY = safeMidY - leftLogoH / 2;
+      if (logoY < bandTop) logoY = bandTop;
+      if (logoY + leftLogoH > bandBottom) logoY = bandBottom - leftLogoH;
+      ctx.drawImage(logoImg, x, logoY, lw, leftLogoH);
       x += lw + Math.round(H * 0.12);
     }
 

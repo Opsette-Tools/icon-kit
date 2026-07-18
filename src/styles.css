@@ -176,3 +176,51 @@
     padding-right: 0;
   }
 }
+
+/* ── Section cards: make one group visibly distinct from the next ─────────────
+   The builder is a stack of numbered sections. On a plain Card the header runs
+   flush into the next, so the eye can't find the boundaries. We give every
+   section header a tinted band + an accent left-edge, and thicken the whole
+   card's border, so each block reads as its own panel. Applied via a class so
+   the styling lives in ONE place, not pasted per card. */
+.ops-section-card {
+  border: 1px solid #d9e5e0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(23, 51, 44, 0.04);
+}
+.ops-section-card > .ant-card-head {
+  background: linear-gradient(180deg, #f2f8f5 0%, #eaf3ef 100%);
+  border-bottom: 1px solid #d9e5e0;
+  border-left: 3px solid #2f4f46;
+  min-height: 44px;
+}
+.ops-section-card > .ant-card-head .ant-card-head-title {
+  font-weight: 600;
+  color: #1c332c;
+}
+/* When a section is used as a collapse trigger, the whole header is clickable. */
+.ops-section-card.ops-collapsible > .ant-card-head {
+  cursor: pointer;
+  user-select: none;
+}
+.ops-section-card.ops-collapsible > .ant-card-head:hover {
+  background: linear-gradient(180deg, #ecf5f0 0%, #e2efe9 100%);
+}
+/* The previews card (the live output) gets the accent band but reads as the
+   "primary" panel — a slightly stronger edge. */
+.ops-section-card.ops-section-primary {
+  border-color: #2f4f46;
+}
+.ops-section-card.ops-section-primary > .ant-card-head {
+  border-left-width: 4px;
+}
+
+/* Chevron that rotates when a collapsible section opens. */
+.ops-collapse-chevron {
+  transition: transform 0.2s ease;
+  color: #5a7268;
+}
+.ops-collapse-chevron.ops-open {
+  transform: rotate(90deg);
+}

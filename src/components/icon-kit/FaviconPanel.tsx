@@ -5,6 +5,7 @@ import {
   ColorPicker,
   Input,
   Modal,
+  Popconfirm,
   Radio,
   Slider,
   Space,
@@ -13,7 +14,13 @@ import {
   Upload,
   App,
 } from "antd";
-import { DownloadOutlined, FolderOpenOutlined, InboxOutlined, ScissorOutlined } from "@ant-design/icons";
+import {
+  DownloadOutlined,
+  FolderOpenOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+  ScissorOutlined,
+} from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import JSZip from "jszip";
 
@@ -31,6 +38,7 @@ import { fromSocialKitJson, configForTab, type SocialAsset, type SocialConfig } 
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 import { ExportToBoardButton } from "./ExportToBoardButton";
 import { ImageCropper } from "./ImageCropper";
+import { SectionCard } from "./SectionCard";
 import type { CropRect } from "../../lib/icon-kit/crop";
 
 type SourceTab = "image" | "initials" | "emoji";
@@ -405,9 +413,26 @@ export function FaviconPanel() {
           Build a favicon and app-icon set — download the full pack, or send the
           key icons to Brand Board for a client's kit.
         </Typography.Paragraph>
-        <Button icon={<FolderOpenOutlined />} onClick={() => setReopenOpen(true)}>
-          Reopen a saved icon
-        </Button>
+        <Space wrap>
+          <Popconfirm
+            title="Reset the favicon?"
+            description="Clears the mark, background, shape and app name back to defaults. This can't be undone."
+            okText="Reset"
+            okButtonProps={{ danger: true }}
+            cancelText="Keep it"
+            onConfirm={() => {
+              dispatch({ type: "patch", patch: faviconInitial });
+              message.success("Favicon reset to defaults");
+            }}
+          >
+            <Button danger icon={<ReloadOutlined />}>
+              Reset
+            </Button>
+          </Popconfirm>
+          <Button icon={<FolderOpenOutlined />} onClick={() => setReopenOpen(true)}>
+            Reopen
+          </Button>
+        </Space>
       </div>
 
       <Modal
@@ -450,7 +475,25 @@ export function FaviconPanel() {
         />
       )}
 
-      <Card size="small" title="1. Pick your mark">
+      <SectionCard
+        title="1. Pick your mark"
+        onReset={() => {
+          dispatch({
+            type: "patch",
+            patch: {
+              tab: faviconInitial.tab,
+              imageDataUrl: faviconInitial.imageDataUrl,
+              originalImageDataUrl: faviconInitial.originalImageDataUrl,
+              cropRect: faviconInitial.cropRect,
+              initialsText: faviconInitial.initialsText,
+              initialsColor: faviconInitial.initialsColor,
+              emoji: faviconInitial.emoji,
+            },
+          });
+          message.success("Mark reset");
+        }}
+        resetTip="Reset the mark"
+      >
         <Tabs
           activeKey={state.tab}
           onChange={(k) => dispatch({ type: "patch", patch: { tab: k as SourceTab } })}
@@ -544,9 +587,24 @@ export function FaviconPanel() {
             },
           ]}
         />
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="2. Background & shape">
+      <SectionCard
+        title="2. Background & shape"
+        onReset={() => {
+          dispatch({
+            type: "patch",
+            patch: {
+              bgMode: faviconInitial.bgMode,
+              bgColor: faviconInitial.bgColor,
+              paddingPct: faviconInitial.paddingPct,
+              radiusPct: faviconInitial.radiusPct,
+            },
+          });
+          message.success("Background & shape reset");
+        }}
+        resetTip="Reset background & shape"
+      >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Radio.Group
             value={state.bgMode}
@@ -585,16 +643,16 @@ export function FaviconPanel() {
             />
           </div>
         </Space>
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="Preview">
+      <SectionCard title="Preview" primary>
         <div
           ref={previewRef}
           style={{ display: "flex", gap: 24, alignItems: "flex-end", flexWrap: "wrap" }}
         />
-      </Card>
+      </SectionCard>
 
-      <Card size="small" title="3. Download">
+      <SectionCard title="3. Download">
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <Input
             addonBefore="App name"
@@ -621,7 +679,7 @@ export function FaviconPanel() {
             If you've also designed a social banner, you'll be offered to export both.
           </Typography.Paragraph>
         </Space>
-      </Card>
+      </SectionCard>
 
       <Card size="small" title="<head> snippet">
         <Typography.Paragraph
