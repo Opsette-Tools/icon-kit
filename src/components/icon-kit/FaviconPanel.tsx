@@ -13,7 +13,7 @@ import {
   Upload,
   App,
 } from "antd";
-import { DownloadOutlined, FolderOpenOutlined, InboxOutlined } from "@ant-design/icons";
+import { DownloadOutlined, FolderOpenOutlined, InboxOutlined, ScissorOutlined } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import JSZip from "jszip";
 
@@ -30,12 +30,19 @@ import { downloadBlob, blobToDataUrl } from "../../lib/icon-kit/download";
 import { fromSocialKitJson, configForTab, type SocialAsset, type SocialConfig } from "../../lib/icon-kit/brand-kit";
 import { usePersistentReducer } from "../../hooks/use-persistent-reducer";
 import { ExportToBoardButton } from "./ExportToBoardButton";
+import { ImageCropper } from "./ImageCropper";
+import type { CropRect } from "../../lib/icon-kit/crop";
 
 type SourceTab = "image" | "initials" | "emoji";
 
 export interface FaviconState {
   tab: SourceTab;
   imageDataUrl: string | null;
+  /** The uncropped upload, kept so the crop is non-destructive and re-editable.
+   *  imageDataUrl holds the CROPPED result the pipeline actually renders. */
+  originalImageDataUrl: string | null;
+  /** Fractional crop applied to originalImageDataUrl (null = whole image). */
+  cropRect: CropRect | null;
   initialsText: string;
   initialsColor: string;
   emoji: string;
@@ -58,6 +65,8 @@ export const FAVICON_KEY = "iconkit.favicon.v1";
 export const faviconInitial: State = {
   tab: "initials",
   imageDataUrl: null,
+  originalImageDataUrl: null,
+  cropRect: null,
   initialsText: "OP",
   initialsColor: "#ffffff",
   emoji: "🚀",
@@ -116,6 +125,7 @@ export function faviconIsDirty(s: State): boolean {
   const k: (keyof State)[] = [
     "tab",
     "imageDataUrl",
+    "originalImageDataUrl",
     "initialsText",
     "initialsColor",
     "emoji",
@@ -157,6 +167,7 @@ export function FaviconPanel() {
   const [busy, setBusy] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenText, setReopenText] = useState("");
+  const [cropOpen, setCropOpen] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
 
   const source = useMemo(() => buildSource(state), [state]);
@@ -221,12 +232,28 @@ export function FaviconPanel() {
     showUploadList: false,
     beforeUpload: (file) => {
       const reader = new FileReader();
-      reader.onload = (e) =>
-        dispatch({ type: "patch", patch: { imageDataUrl: String(e.target?.result || "") } });
+      reader.onload = (e) => {
+        const url = String(e.target?.result || "");
+        // Store the untouched upload as BOTH the original and the working image
+        // (uncropped to start), reset any prior crop, then open the cropper so
+        // the user can immediately frame the badge. Most logos need a crop, so
+        // opening it is the helpful default — they can cancel to keep the whole
+        // image.
+        dispatch({
+          type: "patch",
+          patch: { originalImageDataUrl: url, imageDataUrl: url, cropRect: null },
+        });
+        setCropOpen(true);
+      };
       reader.readAsDataURL(file);
       return false;
     },
   };
+
+  function applyCrop({ croppedDataUrl, rect }: { croppedDataUrl: string; rect: CropRect }) {
+    dispatch({ type: "patch", patch: { imageDataUrl: croppedDataUrl, cropRect: rect } });
+    setCropOpen(false);
+  }
 
   async function handleDownload() {
     if (!opts) {
@@ -344,6 +371,8 @@ export function FaviconPanel() {
     const patch: Partial<State> = {};
     if (c.tab !== undefined) patch.tab = c.tab;
     if (c.imageDataUrl !== undefined) patch.imageDataUrl = c.imageDataUrl;
+    if (c.originalImageDataUrl !== undefined) patch.originalImageDataUrl = c.originalImageDataUrl;
+    if (c.cropRect !== undefined) patch.cropRect = c.cropRect;
     if (c.initialsText !== undefined) patch.initialsText = c.initialsText;
     if (c.initialsColor !== undefined) patch.initialsColor = c.initialsColor;
     if (c.emoji !== undefined) patch.emoji = c.emoji;
@@ -410,6 +439,16 @@ export function FaviconPanel() {
           style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}
         />
       </Modal>
+
+      {state.originalImageDataUrl && (
+        <ImageCropper
+          open={cropOpen}
+          imageDataUrl={state.originalImageDataUrl}
+          initialRect={state.cropRect}
+          onCancel={() => setCropOpen(false)}
+          onApply={applyCrop}
+        />
+      )}
 
       <Card size="small" title="1. Pick your mark">
         <Tabs
@@ -478,18 +517,29 @@ export function FaviconPanel() {
               key: "image",
               label: "Upload",
               children: (
-                <Upload.Dragger {...uploadProps} style={{ padding: 8 }}>
-                  <p className="ant-upload-drag-icon">
-                    <InboxOutlined />
-                  </p>
-                  <p className="ant-upload-text">Drop a PNG / JPG / SVG</p>
-                  <p className="ant-upload-hint" style={{ fontSize: 12 }}>
-                    Square images work best.
-                  </p>
-                  {state.imageDataUrl && (
-                    <p style={{ marginTop: 8, fontSize: 12, color: "#2f4f46" }}>✓ Image loaded</p>
+                <Space direction="vertical" style={{ width: "100%" }} size={10}>
+                  <Upload.Dragger {...uploadProps} style={{ padding: 8 }}>
+                    <p className="ant-upload-drag-icon">
+                      <InboxOutlined />
+                    </p>
+                    <p className="ant-upload-text">Drop a PNG / JPG / SVG</p>
+                    <p className="ant-upload-hint" style={{ fontSize: 12 }}>
+                      Any shape works — crop it to a square next.
+                    </p>
+                    {state.imageDataUrl && (
+                      <p style={{ marginTop: 8, fontSize: 12, color: "#2f4f46" }}>✓ Image loaded</p>
+                    )}
+                  </Upload.Dragger>
+                  {state.originalImageDataUrl && (
+                    <Button
+                      icon={<ScissorOutlined />}
+                      onClick={() => setCropOpen(true)}
+                      block
+                    >
+                      {state.cropRect ? "Re-crop image" : "Crop image"}
+                    </Button>
                   )}
-                </Upload.Dragger>
+                </Space>
               ),
             },
           ]}
