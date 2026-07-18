@@ -672,7 +672,7 @@ export function FaviconPanel() {
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
             Includes a scalable favicon.svg, .ico (16/32/48), 16/32/180/192/512 PNGs, a maskable icon, and a pre-filled site.webmanifest.
           </Typography.Paragraph>
-          <ExportToBoardButton scope="favicon" liveState={state} disabled={!opts} block />
+          <ExportToBoardButton liveState={state} disabled={!opts} block />
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
             Sends the app-icon (512), Apple touch icon (180) and favicon (32) as a
             brand-asset set — paste into Brand Board, or back into “Reopen” to revise.

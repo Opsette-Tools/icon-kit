@@ -1,7 +1,7 @@
 {
   "name": "Icon Kit — Opsette",
   "short_name": "Icon Kit",
-  "description": "Generate favicons, app icons, and Open Graph social images right in your browser.",
+  "description": "Generate favicons, app icons, and a ready-to-drop-in web manifest right in your browser.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

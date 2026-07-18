@@ -1,16 +1,14 @@
 // Icon Kit's adapter for the shared brand-core seed (Mechanism 1 of
 // docs/KIT-SUITE-CONNECT-PLAN.md). Maps a generic BrandCore — the four facts
-// that ride in a ?seed= URL — onto BOTH the Social and Favicon panels, so both
-// open pre-filled with the client's name, logo, and brand color.
+// that ride in a ?seed= URL — onto the Favicon panel, so it opens pre-filled
+// with the client's name, logo, and brand color.
 //
-// Icon Kit's two panels each own a `usePersistentReducer` that hydrates from
-// localStorage and re-mounts on every tab switch. So rather than thread a seed
-// through props (which would re-fire on each tab switch), we apply the seed
-// ONCE at App mount by merging it into each panel's localStorage key BEFORE the
-// panels mount. They then hydrate from it naturally, and it persists correctly.
+// The Favicon panel owns a `usePersistentReducer` that hydrates from localStorage
+// and re-mounts on embed load. So rather than thread a seed through props, we
+// apply it ONCE at App mount by merging it into the panel's localStorage key
+// BEFORE it mounts. It then hydrates from it naturally, and it persists correctly.
 // The URL param is cleared right after, so it applies exactly once.
 import type { BrandCore } from "./opsette-kit-link";
-import { SOCIAL_KEY, socialInitial, looksLikeSocial } from "@/components/icon-kit/SocialPanel";
 import { FAVICON_KEY, faviconInitial, looksLikeFavicon } from "@/components/icon-kit/FaviconPanel";
 import { fromSocialKitJson, configForTab } from "./icon-kit/brand-kit";
 
@@ -60,29 +58,13 @@ function mergeIntoStorage(key: string, base: object, patch: object): void {
 }
 
 /**
- * Apply a decoded brand core to Icon Kit's two panels (via localStorage). Safe
+ * Apply a decoded brand core to Icon Kit's Favicon panel (via localStorage). Safe
  * to call once at App mount; a no-op when the core carries nothing usable.
  */
 export function applyIconKitSeed(core: BrandCore): void {
   const primary = pickPrimary(core);
   const logo = core.logo && core.logo.startsWith("data:") ? core.logo : null;
 
-  // ── Social & Banners ──────────────────────────────────────────────────────
-  const social: Record<string, unknown> = {};
-  if (core.name) social.headline = core.name;
-  if (core.tagline) social.subhead = core.tagline;
-  if (logo) {
-    social.logoDataUrl = logo;
-    social.watermark = true; // a supplied logo is worth showing as the watermark
-  }
-  if (primary) {
-    social.solidColor = primary;
-    social.gradFrom = primary;
-    social.accentColor = primary;
-  }
-  mergeIntoStorage(SOCIAL_KEY, socialInitial, social);
-
-  // ── Favicon ───────────────────────────────────────────────────────────────
   const favicon: Record<string, unknown> = {};
   if (core.name) favicon.appName = core.name;
   if (primary) favicon.bgColor = primary;
@@ -100,25 +82,22 @@ export function applyIconKitSeed(core: BrandCore): void {
 }
 
 /**
- * Apply a FULL Icon Kit "social" blob (Mechanism 3 embed load) to both panels via
- * localStorage, using the same reopen recipe the panels' own paste modal uses
- * (`fromSocialKitJson` → `configForTab`). Unlike the seed (a slim BrandCore), this
- * is a real exported blob carrying each tab's saved config. We merge whichever
- * tab configs the blob carries into their storage keys, so a subsequent panel
- * (re)mount hydrates branded — no props, no tab-switch re-fire.
+ * Apply a FULL Icon Kit "social" blob (Mechanism 3 embed load) to the Favicon
+ * panel via localStorage, using the same reopen recipe the panel's own paste
+ * modal uses (`fromSocialKitJson` → `configForTab`). This is a real exported blob
+ * carrying the favicon config; we merge it into storage so a subsequent panel
+ * (re)mount hydrates branded — no props, no re-fire.
  *
- * Returns which tab to show: "social" if the blob carried a social config (the
- * banner is what you'd revise first), else "favicon" if only that was present,
- * else null (nothing usable — leave the tab as-is).
+ * Returns true if the blob carried a usable favicon config (so the caller should
+ * remount the panel), else false (nothing usable — leave the panel as-is).
  */
-export function applyEmbedBlob(raw: string): "social" | "favicon" | null {
+export function applyEmbedBlob(raw: string): boolean {
   const parsed = fromSocialKitJson(raw);
-  if (!parsed) return null;
-  const social = configForTab(parsed, "social", looksLikeSocial);
+  if (!parsed) return false;
   const favicon = configForTab(parsed, "favicon", looksLikeFavicon);
-  if (social) mergeIntoStorage(SOCIAL_KEY, socialInitial, social);
-  if (favicon) mergeIntoStorage(FAVICON_KEY, faviconInitial, favicon);
-  if (social) return "social";
-  if (favicon) return "favicon";
-  return null;
+  if (favicon) {
+    mergeIntoStorage(FAVICON_KEY, faviconInitial, favicon);
+    return true;
+  }
+  return false;
 }

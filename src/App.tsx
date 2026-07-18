@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { ConfigProvider, App as AntdApp, Segmented, Typography } from "antd";
+import { ConfigProvider, App as AntdApp, Typography } from "antd";
 import { OpsetteHeader } from "./components/opsette-header";
 import { OpsetteFooterLogo } from "./components/opsette-share";
 import { EmbedSaveBar } from "./components/EmbedSaveBar";
 import { FaviconPanel } from "./components/icon-kit/FaviconPanel";
-import { SocialPanel } from "./components/icon-kit/SocialPanel";
 import {
   readSeedFromUrl,
   clearLinkParams,
@@ -14,29 +13,25 @@ import {
   OPSETTE_TOOLS_ORIGIN,
 } from "./lib/opsette-kit-link";
 import { applyIconKitSeed, applyEmbedBlob } from "./lib/seed";
-import {
-  buildCombinedExport,
-  readSocialState,
-  readFaviconState,
-} from "./lib/icon-kit/export-assets";
+import { buildFaviconExport, readFaviconState } from "./lib/icon-kit/export-assets";
 
-// Apply a ?seed= brand core (Mechanism 1) ONCE, synchronously, before the panels
-// mount — it's merged into both panels' localStorage so they hydrate branded.
-// Returns whether a seed landed, so the default tab can jump to Social (the
-// banner is the thing you want to see branded first). Cleared from the URL after.
-function consumeSeed(): boolean {
+// Apply a ?seed= brand core (Mechanism 1) ONCE, synchronously, before the panel
+// mounts — it's merged into the panel's localStorage so it hydrates branded.
+// Cleared from the URL after.
+function consumeSeed(): void {
   const core = readSeedFromUrl();
-  if (!core) return false;
+  if (!core) return;
   applyIconKitSeed(core);
   clearLinkParams();
-  return true;
 }
 
 function IconKitInner() {
-  // Lazy init runs consumeSeed exactly once, on first render, before either
-  // panel mounts and hydrates from localStorage.
-  const [seeded] = useState(consumeSeed);
-  const [tab, setTab] = useState<"favicon" | "social">(seeded ? "social" : "favicon");
+  // Lazy init runs consumeSeed exactly once, on first render, before the panel
+  // mounts and hydrates from localStorage.
+  useState(() => {
+    consumeSeed();
+    return null;
+  });
   const { message } = AntdApp.useApp();
 
   // ── Mechanism 3: running inside a Brand Board iframe ──────────────────────
@@ -47,22 +42,20 @@ function IconKitInner() {
   );
   const [saving, setSaving] = useState(false);
   // Bumped after an embed `load` merges the incoming blob into localStorage; it
-  // keys the panels so they REMOUNT and re-hydrate from the merged storage (the
-  // load arrives after the panels have already mounted, so a remount is how they
-  // pick up the client's assets — mirrors the seed's pre-mount merge trick).
+  // keys the panel so it REMOUNTS and re-hydrates from the merged storage (the
+  // load arrives after the panel has already mounted, so a remount is how it
+  // picks up the client's assets — mirrors the seed's pre-mount merge trick).
   const [loadNonce, setLoadNonce] = useState(0);
 
   // Inbound: the parent hands us the current Icon Kit blob to revise. Merge its
-  // tab configs into localStorage (reusing the reopen recipe), switch to the tab
-  // it carried, and remount the panels so they hydrate branded. Origin-checked.
+  // favicon config into localStorage (reusing the reopen recipe) and remount the
+  // panel so it hydrates branded. Origin-checked.
   useEffect(() => {
     if (!embedded) return;
     const onMessage = (event: MessageEvent) => {
       if (!isTrustedEmbedMessage(event, trustedParentOrigins)) return;
       if (event.data.kind === "load" && typeof event.data.payload === "string") {
-        const target = applyEmbedBlob(event.data.payload);
-        if (target) {
-          setTab(target);
+        if (applyEmbedBlob(event.data.payload)) {
           setLoadNonce((n) => n + 1);
         }
       }
@@ -72,16 +65,15 @@ function IconKitInner() {
     return () => window.removeEventListener("message", onMessage);
   }, [embedded, trustedParentOrigins]);
 
-  // Outbound: build the SAME "both"-scope blob "Export to Brand Board" produces
-  // (baked PNGs + per-tab reopen configs), reading the live tab's state from
-  // localStorage (the panels persist on every change), and post it up.
+  // Outbound: build the favicon blob "Export to Brand Board" produces (baked PNGs
+  // + reopen config), reading the live state from localStorage (the panel
+  // persists on every change), and post it up.
   const saveToBrandBoard = async () => {
     setSaving(true);
     try {
-      const liveState = tab === "social" ? readSocialState() : readFaviconState();
-      const { json, assetCount } = await buildCombinedExport("both", tab, liveState);
+      const { json, assetCount } = await buildFaviconExport(readFaviconState());
       if (assetCount === 0) {
-        message.warning("Nothing to send yet — add a banner or favicon first.");
+        message.warning("Nothing to send yet — add a favicon first.");
         return;
       }
       const targetOrigin = import.meta.env.DEV ? "*" : OPSETTE_TOOLS_ORIGIN;
@@ -104,32 +96,12 @@ function IconKitInner() {
 
       <main
         style={{
-          // Social builder uses a wide two-column layout (controls + sticky
-          // previews); the favicon tool is a single narrow column.
-          maxWidth: tab === "social" ? 1240 : 720,
+          maxWidth: 720,
           margin: "0 auto",
           padding: "16px",
-          transition: "max-width 0.2s ease",
         }}
       >
-        <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          <Segmented
-            block
-            size="large"
-            value={tab}
-            onChange={(v) => setTab(v as "favicon" | "social")}
-            options={[
-              { label: "Favicon", value: "favicon" },
-              { label: "Social & Banners", value: "social" },
-            ]}
-            style={{ marginBottom: 16, width: "100%" }}
-          />
-        </div>
-        {tab === "favicon" ? (
-          <FaviconPanel key={`favicon-${loadNonce}`} />
-        ) : (
-          <SocialPanel key={`social-${loadNonce}`} />
-        )}
+        <FaviconPanel key={`favicon-${loadNonce}`} />
         {!embedded && (
           <>
             <Typography.Paragraph
